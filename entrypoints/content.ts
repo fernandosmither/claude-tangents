@@ -181,9 +181,15 @@ class TangentApp {
         title,
         createdAt: Date.now(),
       };
-      await addTangent(rec);
-      this.refreshPill();
-      this.decorateAnchors();
+      // Persistence is best-effort: if local storage is unavailable, the tangent still
+      // opens (you just lose the pill + inline anchor) rather than failing outright.
+      try {
+        await addTangent(rec);
+        this.refreshPill();
+        this.decorateAnchors();
+      } catch (e) {
+        console.warn('[Tangent] tangent created but not saved locally', e);
+      }
       return tangentConv;
     } catch (err) {
       console.error('[Tangent] createTangent failed', err);
