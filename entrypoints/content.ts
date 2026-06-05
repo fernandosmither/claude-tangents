@@ -10,6 +10,7 @@ import {
   sendCompletion,
 } from '@/lib/claude';
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
+import { SEL, findSelectionToolbar } from '@/lib/selectors';
 import { buildSeed } from '@/lib/seed';
 import { addTangent, getTangents, onTangentsChanged, removeTangent } from '@/lib/storage';
 import type { TangentRecord } from '@/lib/types';
@@ -21,7 +22,11 @@ export default defineContentScript({
   cssInjectionMode: 'manual',
   main() {
     if (location.pathname.startsWith('/login')) return;
-    new TangentApp().start();
+    try {
+      new TangentApp().start();
+    } catch (e) {
+      console.warn('[Tangent] failed to start', e);
+    }
   },
 });
 
@@ -34,15 +39,6 @@ function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/** claude.ai's floating selection toolbar (the dark pill containing "Reply"). Locale-independent. */
-function findNativeToolbar(): HTMLElement | null {
-  const toolbars = document.querySelectorAll<HTMLElement>('div[class*="bg-always-black"]');
-  for (const d of toolbars) {
-    const c = d.className.toString();
-    if (c.includes('shadow-lg') && d.querySelector('button')) return d;
-  }
-  return null;
-}
 
 class TangentApp {
   private popovers = new Set<TangentPopover>();
@@ -66,17 +62,21 @@ class TangentApp {
   // --- selection → a "Tangent" pill directly under claude.ai's native Reply toolbar ---
 
   private onSelection() {
-    this.removeToolbarPill();
-    const info = getSelectionInfo();
-    if (!info || !convUuidFromPath()) return;
-    // claude.ai's native Reply toolbar appears a beat after mouseup; place ours once it's there.
-    let tries = 0;
-    const tick = () => {
-      const wrapper = findNativeToolbar();
-      if (wrapper) return this.injectToolbarButton(wrapper, info);
-      if (++tries < 18) setTimeout(tick, 60);
-    };
-    tick();
+    try {
+      this.removeToolbarPill();
+      const info = getSelectionInfo();
+      if (!info || !convUuidFromPath()) return;
+      // claude.ai's native Reply toolbar appears a beat after mouseup; place ours once it's there.
+      let tries = 0;
+      const tick = () => {
+        const wrapper = findSelectionToolbar();
+        if (wrapper) return this.injectToolbarButton(wrapper, info);
+        if (++tries < 18) setTimeout(tick, 60);
+      };
+      tick();
+    } catch {
+      /* selector drift etc. — fail quietly, never break the page */
+    }
   }
 
   private removeToolbarPill() {
@@ -325,7 +325,7 @@ class TangentApp {
 function findTextRange(text: string): Range | null {
   const needle = text.trim();
   if (needle.length < 3) return null;
-  const roots = document.querySelectorAll('.font-claude-response, .font-claude-message');
+  const roots = document.querySelectorAll(SEL.assistantMessage);
   for (const root of roots) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     // single text-node fast path

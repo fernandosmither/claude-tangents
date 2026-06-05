@@ -1,12 +1,8 @@
 import { messageText, pathTo } from './claude';
+import { SEL } from './selectors';
 import type { ConversationTree } from './types';
 
-/** Selectors for an assistant message container (verified against the live DOM). */
-const ASSISTANT_SELECTORS = [
-  '.font-claude-response',
-  '[data-is-streaming]',
-  '.font-claude-message', // older builds
-];
+const ASSISTANT_MATCH = `${SEL.assistantMessage}, [data-is-streaming]`;
 
 export interface SelectionInfo {
   highlight: string;
@@ -19,9 +15,7 @@ export function closestAssistantMessage(node: Node | null): HTMLElement | null {
   let el: HTMLElement | null =
     node instanceof HTMLElement ? node : (node?.parentElement ?? null);
   while (el) {
-    for (const sel of ASSISTANT_SELECTORS) {
-      if (el.matches?.(sel)) return el;
-    }
+    if (el.matches?.(ASSISTANT_MATCH)) return el;
     el = el.parentElement;
   }
   return null;

@@ -6,6 +6,8 @@
  *     UI, with chrome + the seed message stripped via injected CSS).
  */
 
+import { SEL } from './selectors';
+
 export interface PopoverHandlers {
   /** Create the tangent conversation for `question`; resolve to its conv UUID, or throw on failure. */
   createTangent: (question: string) => Promise<string>;
@@ -264,14 +266,14 @@ export class TangentPopover {
       doc.head.appendChild(st);
     }
     // mark the seed (first user message bubble) so STRIP_CSS hides it
-    const firstUser = doc.querySelector('[data-testid="user-message"]');
+    const firstUser = doc.querySelector(SEL.userMessage);
     if (firstUser) {
-      const bubble = (firstUser.closest('[data-user-message-bubble]') as HTMLElement) || (firstUser as HTMLElement);
+      const bubble = (firstUser.closest(SEL.userBubble) as HTMLElement) || (firstUser as HTMLElement);
       if (bubble.getAttribute('data-tangent-seed') !== '1') bubble.setAttribute('data-tangent-seed', '1');
     }
     // reveal only once Claude's answer is actually rendered — during external generation the
     // iframe sits on the "New chat" page, so revealing earlier would flash that.
-    if (doc.querySelector('.font-claude-response, .font-claude-message')) this.reveal();
+    if (doc.querySelector(SEL.assistantMessage)) this.reveal();
   }
 
   /** Called when the seed generation has finished; ensures the answer is rendered. */
@@ -280,7 +282,7 @@ export class TangentPopover {
     if (!iframe || this.closed) return;
     try {
       const doc = iframe.contentDocument;
-      const hasAnswer = doc?.querySelector('.font-claude-response, .font-claude-message');
+      const hasAnswer = doc?.querySelector(SEL.assistantMessage);
       if (!hasAnswer) iframe.contentWindow?.location.reload();
     } catch {
       /* ignore */
