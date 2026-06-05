@@ -106,6 +106,12 @@ export class TangentPopover {
     this.host = document.createElement('div');
     this.host.setAttribute('data-tangent-popover', '');
     this.shadow = this.host.attachShadow({ mode: 'open' });
+    // Shadow-DOM retargeting hides our inputs from claude.ai's global "type-anywhere"
+    // key handler, which would otherwise steal focus to the main composer. Stop key/input
+    // events from propagating out of the popover.
+    for (const t of ['keydown', 'keypress', 'keyup', 'input', 'beforeinput']) {
+      this.host.addEventListener(t, (e) => e.stopPropagation());
+    }
     const style = document.createElement('style');
     style.textContent = CSS;
     this.shadow.appendChild(style);

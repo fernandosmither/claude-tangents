@@ -25,62 +25,60 @@ function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+/** claude.ai's floating selection toolbar (the dark pill containing "Reply"). Locale-independent. */
+function findNativeToolbar(): HTMLElement | null {
+  const toolbars = document.querySelectorAll<HTMLElement>('div[class*="bg-always-black"]');
+  for (const d of toolbars) {
+    const c = d.className.toString();
+    if (c.includes('shadow-lg') && d.querySelector('button')) return d;
+  }
+  return null;
+}
+
 class TangentApp {
-  private button: HTMLButtonElement | null = null;
   private popovers = new Set<TangentPopover>();
   private pill: HTMLDivElement | null = null;
   private lastConv: string | null = null;
 
   start() {
-    document.addEventListener('mouseup', () => setTimeout(() => this.onSelectionChange(), 0));
-    document.addEventListener('selectionchange', () => {
-      if (window.getSelection()?.isCollapsed) this.hideButton();
-    });
-    document.addEventListener('mousedown', (e) => {
-      if (this.button && !this.button.contains(e.target as Node)) this.hideButton();
-    });
+    document.addEventListener('mouseup', () => setTimeout(() => this.onSelection(), 0));
     // SPA navigation
     this.watchNavigation();
     this.onNavigate();
     onTangentsChanged(() => this.refreshPill());
   }
 
-  // --- selection → floating "Tangent" button ---
+  // --- selection → inject "Tangent" into claude.ai's native selection toolbar ---
 
-  private onSelectionChange() {
+  private onSelection() {
     const info = getSelectionInfo();
-    if (!info || !convUuidFromPath()) return this.hideButton();
-    const sel = window.getSelection()!;
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
-    this.showButton(rect, info);
-  }
-
-  private showButton(rect: DOMRect, info: SelectionInfo) {
-    if (!this.button) {
-      const b = document.createElement('button');
-      b.textContent = '↳ Tangent';
-      b.setAttribute('data-tangent-btn', '');
-      b.style.cssText =
-        'position:fixed;z-index:2147483640;padding:5px 10px;font:600 12px/1 ui-sans-serif,system-ui,sans-serif;' +
-        'color:#fff;background:#d97757;border:0;border-radius:7px;box-shadow:0 3px 12px rgba(0,0,0,.28);cursor:pointer;';
-      b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
-      document.body.appendChild(b);
-      this.button = b;
-    }
-    const b = this.button;
-    b.onclick = () => {
-      this.hideButton();
-      this.openCompose(info, rect);
+    if (!info || !convUuidFromPath()) return;
+    // claude.ai's native Reply toolbar appears a beat after mouseup; inject once it's there.
+    let tries = 0;
+    const tick = () => {
+      const wrapper = findNativeToolbar();
+      if (wrapper) return this.injectToolbarButton(wrapper, info);
+      if (++tries < 18) setTimeout(tick, 60);
     };
-    const top = Math.max(8, rect.top - 34);
-    const left = Math.min(rect.left + rect.width / 2 - 40, window.innerWidth - 100);
-    b.style.top = `${top}px`;
-    b.style.left = `${Math.max(8, left)}px`;
-    b.style.display = 'block';
+    tick();
   }
 
-  private hideButton() {
-    if (this.button) this.button.style.display = 'none';
+  private injectToolbarButton(wrapper: HTMLElement, info: SelectionInfo) {
+    if (wrapper.querySelector('[data-tangent-toolbar-btn]')) return;
+    const reply = wrapper.querySelector('button');
+    const btn = document.createElement('button');
+    if (reply) btn.className = reply.className; // match the native button's layout + hover
+    btn.setAttribute('data-tangent-toolbar-btn', '');
+    btn.style.color = '#e8967a'; // our accent, legible on the dark toolbar
+    btn.innerHTML = '↳&nbsp;Tangent';
+    btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection alive
+    btn.addEventListener('click', () => {
+      const sel = window.getSelection();
+      const rect =
+        sel && sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : btn.getBoundingClientRect();
+      this.openCompose(info, rect);
+    });
+    wrapper.appendChild(btn);
   }
 
   // --- compose + create tangent ---
