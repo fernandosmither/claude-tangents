@@ -1,5 +1,12 @@
 import { TangentPopover } from '@/lib/popover';
-import { createConversation, drain, getChatOrgUuid, getTree, sendCompletion } from '@/lib/claude';
+import {
+  createConversation,
+  deleteConversation,
+  drain,
+  getChatOrgUuid,
+  getTree,
+  sendCompletion,
+} from '@/lib/claude';
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
 import { buildSeed } from '@/lib/seed';
 import { addTangent, getTangents, onTangentsChanged, removeTangent } from '@/lib/storage';
@@ -41,19 +48,26 @@ class TangentApp {
   private lastConv: string | null = null;
 
   start() {
-    document.addEventListener('mouseup', () => setTimeout(() => this.onSelection(), 0));
+    document.addEventListener('mouseup', (e) => {
+      if ((e.target as HTMLElement)?.closest?.('[data-tangent-toolbar-pill]')) return; // our own button
+      setTimeout(() => this.onSelection(), 0);
+    });
+    document.addEventListener('selectionchange', () => {
+      if (window.getSelection()?.isCollapsed) this.removeToolbarPill();
+    });
     // SPA navigation
     this.watchNavigation();
     this.onNavigate();
     onTangentsChanged(() => this.refreshPill());
   }
 
-  // --- selection → inject "Tangent" into claude.ai's native selection toolbar ---
+  // --- selection → a "Tangent" pill directly under claude.ai's native Reply toolbar ---
 
   private onSelection() {
+    this.removeToolbarPill();
     const info = getSelectionInfo();
     if (!info || !convUuidFromPath()) return;
-    // claude.ai's native Reply toolbar appears a beat after mouseup; inject once it's there.
+    // claude.ai's native Reply toolbar appears a beat after mouseup; place ours once it's there.
     let tries = 0;
     const tick = () => {
       const wrapper = findNativeToolbar();
@@ -63,22 +77,37 @@ class TangentApp {
     tick();
   }
 
+  private removeToolbarPill() {
+    document.querySelector('[data-tangent-toolbar-pill]')?.remove();
+  }
+
   private injectToolbarButton(wrapper: HTMLElement, info: SelectionInfo) {
-    if (wrapper.querySelector('[data-tangent-toolbar-btn]')) return;
+    if (document.querySelector('[data-tangent-toolbar-pill]')) return;
     const reply = wrapper.querySelector('button');
+    const rect = wrapper.getBoundingClientRect();
+    // a separate pill placed directly *under* the native Reply toolbar, matching its look
+    const pill = document.createElement('div');
+    pill.setAttribute('data-tangent-toolbar-pill', '');
+    pill.className = wrapper.className; // clone the native pill (dark, rounded, shadow, blur)
+    pill.style.position = 'fixed';
+    pill.style.left = `${Math.round(rect.left)}px`;
+    pill.style.top = `${Math.round(rect.bottom + 5)}px`;
+    pill.style.zIndex = '2147483640';
     const btn = document.createElement('button');
     if (reply) btn.className = reply.className; // match the native button's layout + hover
-    btn.setAttribute('data-tangent-toolbar-btn', '');
     btn.style.color = '#e8967a'; // our accent, legible on the dark toolbar
     btn.innerHTML = '↳&nbsp;Tangent';
     btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection alive
     btn.addEventListener('click', () => {
       const sel = window.getSelection();
-      const rect =
-        sel && sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : btn.getBoundingClientRect();
-      this.openCompose(info, rect);
+      const r =
+        sel && sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : pill.getBoundingClientRect();
+      this.removeToolbarPill();
+      window.getSelection()?.removeAllRanges();
+      this.openCompose(info, r);
     });
-    wrapper.appendChild(btn);
+    pill.appendChild(btn);
+    document.body.appendChild(pill);
   }
 
   // --- compose + create tangent ---
@@ -102,29 +131,32 @@ class TangentApp {
     info: SelectionInfo,
     question: string,
     getPopover: () => TangentPopover,
-  ): Promise<string | null> {
+  ): Promise<string> {
     try {
       const org = await getChatOrgUuid();
       const tree = await getTree(mainConv, org);
       const anchorUuid =
         findAnchorUuid(tree, info.highlight, info.prefix) ||
         [...tree.chat_messages].reverse().find((m) => m.sender === 'assistant')?.uuid;
-      if (!anchorUuid) return null;
+      if (!anchorUuid) throw new Error('No Claude answer found to fork from.');
       const model = tree.model || 'claude-sonnet-4-5';
       const seed = buildSeed({ tree, anchorMessageUuid: anchorUuid, highlight: info.highlight, question });
 
       const title = `↳ ${info.highlight.slice(0, 48)}`;
       const tangentConv = await createConversation(title, org);
       const res = await sendCompletion({ convUuid: tangentConv, prompt: seed, model, org });
+      if (!res.ok) {
+        deleteConversation(tangentConv, org).catch(() => {}); // clean up the empty conversation
+        throw new Error(`Claude rejected the request (HTTP ${res.status}).`);
+      }
 
       // generation runs in the background; reload the iframe once it's done so the
       // first answer is guaranteed to render even if mid-stream attach didn't work.
       drain(res)
         .catch(() => {})
         .finally(() => getPopover()?.notifyGenerationComplete());
-      // NOTE: claude.ai has no per-conversation archive API (only projects), so tangents
-      // can't be hidden from the sidebar — they're labelled with a "↳" title prefix instead.
-      // Future: group them under a dedicated "Tangents" project (move-to-project API).
+      // NOTE: claude.ai has no per-conversation archive API, so tangents are labelled with a
+      // "↳" title prefix instead of hidden (a future option is grouping them under a project).
 
       const rec: TangentRecord = {
         tangentId: uid(),
@@ -143,7 +175,7 @@ class TangentApp {
       return tangentConv;
     } catch (err) {
       console.error('[Tangent] createTangent failed', err);
-      return null;
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 

@@ -7,8 +7,8 @@
  */
 
 export interface PopoverHandlers {
-  /** Create the tangent conversation for `question`; resolve to its conv UUID (or null on failure). */
-  createTangent: (question: string) => Promise<string | null>;
+  /** Create the tangent conversation for `question`; resolve to its conv UUID, or throw on failure. */
+  createTangent: (question: string) => Promise<string>;
   onClose?: () => void;
 }
 
@@ -63,6 +63,7 @@ textarea {
 textarea:focus { border-color: #d97757; }
 .row { display: flex; align-items: center; gap: 8px; }
 .hint { font-size: 11px; opacity: .55; }
+.err { color: #e06c5b; font-size: 12px; padding: 2px 2px 0; white-space: pre-wrap; }
 .btn {
   margin-left: auto; border: 0; background: #d97757; color: #fff; cursor: pointer;
   font: 600 13px/1 inherit; padding: 9px 14px; border-radius: 8px;
@@ -174,26 +175,33 @@ export class TangentPopover {
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = 'Ask';
+    const err = document.createElement('div');
+    err.className = 'err';
     const submit = async () => {
       const q = ta.value.trim();
       if (!q || this.closed) return;
       btn.disabled = true;
       ta.disabled = true;
-      this.showStatus('Forking the conversation…');
-      const convUuid = await this.handlers.createTangent(q);
-      if (this.closed) return;
-      if (!convUuid) {
-        this.showStatus('Could not create the tangent. Check the console.');
-        return;
+      err.textContent = '';
+      btn.textContent = 'Forking…';
+      try {
+        const convUuid = await this.handlers.createTangent(q);
+        if (this.closed) return;
+        this.mountIframe(convUuid);
+      } catch (e) {
+        if (this.closed) return;
+        err.textContent = e instanceof Error ? e.message : String(e);
+        btn.disabled = false;
+        ta.disabled = false;
+        btn.textContent = 'Ask';
       }
-      this.mountIframe(convUuid);
     };
     btn.onclick = submit;
     ta.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit();
     });
     row.appendChild(btn);
-    wrap.append(ta, row);
+    wrap.append(ta, row, err);
     this.body.replaceChildren(wrap);
     setTimeout(() => ta.focus(), 0);
   }

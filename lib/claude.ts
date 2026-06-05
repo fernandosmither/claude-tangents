@@ -39,7 +39,13 @@ export async function getTree(convUuid: string, org?: string): Promise<Conversat
   const res = await api(
     `/organizations/${o}/chat_conversations/${convUuid}?tree=True&rendering_mode=messages&render_all_tools=true`,
   );
-  if (!res.ok) throw new Error(`getTree ${res.status}`);
+  if (!res.ok) {
+    throw new Error(
+      res.status === 404
+        ? 'This conversation no longer exists on the server — reload the page.'
+        : `Couldn't read the conversation (HTTP ${res.status}).`,
+    );
+  }
   return res.json();
 }
 
@@ -87,7 +93,8 @@ export async function createConversation(name: string, org?: string): Promise<st
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ uuid, name }),
   });
-  if (!res.ok && res.status !== 201) throw new Error(`createConversation ${res.status}`);
+  if (!res.ok && res.status !== 201)
+    throw new Error(`Couldn't create the tangent conversation (HTTP ${res.status}).`);
   return uuid;
 }
 
