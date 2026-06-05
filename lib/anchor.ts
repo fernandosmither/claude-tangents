@@ -1,11 +1,11 @@
 import { messageText, pathTo } from './claude';
 import type { ConversationTree } from './types';
 
-/** Selectors for an assistant message container. Refined against the live DOM. */
+/** Selectors for an assistant message container (verified against the live DOM). */
 const ASSISTANT_SELECTORS = [
-  '.font-claude-message',
-  '[data-testid="assistant-message"]',
+  '.font-claude-response',
   '[data-is-streaming]',
+  '.font-claude-message', // older builds
 ];
 
 export interface SelectionInfo {
@@ -49,18 +49,22 @@ export function getSelectionInfo(min = 2): SelectionInfo | null {
  * Resolve a highlight to the assistant message UUID that contains it, by matching
  * against the conversation tree (prefer the current path; prefer the latest match).
  */
+const normWs = (s: string) => s.replace(/\s+/g, ' ').trim();
+
 export function findAnchorUuid(
   tree: ConversationTree,
   highlight: string,
-  prefix = '',
+  _prefix = '',
 ): string | null {
-  const needle = (prefix + highlight).trim();
+  // Normalize whitespace: the DOM's textContent joins paragraphs differently than the
+  // stored message text, so a raw substring match misses selections crossing a boundary.
+  const needle = normWs(highlight);
+  if (!needle) return null;
   const path = pathTo(tree).filter((m) => m.sender === 'assistant');
   const candidates = path.length ? path : tree.chat_messages.filter((m) => m.sender === 'assistant');
   // search from the most recent backwards
   for (let i = candidates.length - 1; i >= 0; i--) {
-    const body = messageText(candidates[i]);
-    if (body.includes(needle) || body.includes(highlight)) return candidates[i].uuid;
+    if (normWs(messageText(candidates[i])).includes(needle)) return candidates[i].uuid;
   }
   return null;
 }

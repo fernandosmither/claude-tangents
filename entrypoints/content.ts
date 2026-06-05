@@ -1,12 +1,5 @@
 import { TangentPopover } from '@/lib/popover';
-import {
-  archiveConversation,
-  createConversation,
-  drain,
-  getChatOrgUuid,
-  getTree,
-  sendCompletion,
-} from '@/lib/claude';
+import { createConversation, drain, getChatOrgUuid, getTree, sendCompletion } from '@/lib/claude';
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
 import { buildSeed } from '@/lib/seed';
 import { addTangent, getTangents, onTangentsChanged, removeTangent } from '@/lib/storage';
@@ -131,7 +124,9 @@ class TangentApp {
       drain(res)
         .catch(() => {})
         .finally(() => getPopover()?.notifyGenerationComplete());
-      archiveConversation(tangentConv, org).catch(() => {});
+      // NOTE: claude.ai has no per-conversation archive API (only projects), so tangents
+      // can't be hidden from the sidebar — they're labelled with a "↳" title prefix instead.
+      // Future: group them under a dedicated "Tangents" project (move-to-project API).
 
       const rec: TangentRecord = {
         tangentId: uid(),
@@ -288,9 +283,7 @@ class TangentApp {
 function findTextRange(text: string): Range | null {
   const needle = text.trim();
   if (needle.length < 3) return null;
-  const roots = document.querySelectorAll(
-    '.font-claude-message, [data-testid="assistant-message"]',
-  );
+  const roots = document.querySelectorAll('.font-claude-response, .font-claude-message');
   for (const root of roots) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     // single text-node fast path

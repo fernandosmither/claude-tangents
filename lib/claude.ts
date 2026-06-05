@@ -143,34 +143,7 @@ export async function deleteConversation(convUuid: string, org?: string): Promis
   return res.status === 204 || res.ok;
 }
 
-/**
- * Hide a tangent conversation from the sidebar.
- * The exact archive endpoint is confirmed at build time (see plan task #7); this
- * tries the known candidates and reports which worked.
- */
-export async function archiveConversation(convUuid: string, org?: string): Promise<boolean> {
-  const o = org || (await getChatOrgUuid());
-  const candidates: Array<() => Promise<Response>> = [
-    () =>
-      api(`/organizations/${o}/chat_conversations/${convUuid}?rendering_mode=raw`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ is_archived: true }),
-      }),
-    () =>
-      api(`/organizations/${o}/chat_conversations/${convUuid}/archive`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      }),
-  ];
-  for (const attempt of candidates) {
-    try {
-      const res = await attempt();
-      if (res.ok) return true;
-    } catch {
-      /* try next */
-    }
-  }
-  return false;
-}
+// NOTE: claude.ai exposes no per-conversation archive endpoint (verified live — the
+// conversation menu only offers star/rename/move-to-project/delete; `is_archived` is a
+// *project* flag). Tangents are therefore labelled with a "↳" title prefix rather than
+// hidden. A future option is grouping them under a dedicated project (move-to-project API).

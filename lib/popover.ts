@@ -78,10 +78,11 @@ textarea:focus { border-color: #d97757; }
   opacity:.4; }
 `;
 
-/** CSS injected into the tangent iframe to strip claude.ai's chrome. Tuned live (task #7). */
+/** CSS injected into the tangent iframe to strip claude.ai's chrome (verified live). */
 const STRIP_CSS = `
-nav[aria-label], nav.fixed { display: none !important; }
-main { max-width: 100% !important; margin-left: 0 !important; padding: 8px 14px !important; }
+nav { display: none !important; }
+[data-testid="page-header"] { display: none !important; }
+main { max-width: 100% !important; margin-left: 0 !important; padding: 6px 14px !important; }
 [data-tangent-seed="1"] { display: none !important; }
 `;
 
@@ -232,11 +233,11 @@ export class TangentPopover {
       st.textContent = STRIP_CSS;
       doc.head.appendChild(st);
     }
-    // mark the seed (first user message turn) so STRIP_CSS hides it
+    // mark the seed (first user message bubble) so STRIP_CSS hides it
     const firstUser = doc.querySelector('[data-testid="user-message"]');
-    if (firstUser && !firstUser.closest('[data-tangent-seed]')) {
-      const turn = (firstUser.closest('div[class*="group"]') as HTMLElement) || (firstUser as HTMLElement);
-      turn.setAttribute('data-tangent-seed', '1');
+    if (firstUser) {
+      const bubble = (firstUser.closest('[data-user-message-bubble]') as HTMLElement) || (firstUser as HTMLElement);
+      if (bubble.getAttribute('data-tangent-seed') !== '1') bubble.setAttribute('data-tangent-seed', '1');
     }
   }
 
@@ -246,9 +247,7 @@ export class TangentPopover {
     if (!iframe || this.closed) return;
     try {
       const doc = iframe.contentDocument;
-      const hasAnswer = doc?.querySelector(
-        '.font-claude-message, [data-testid="assistant-message"]',
-      );
+      const hasAnswer = doc?.querySelector('.font-claude-response, .font-claude-message');
       if (!hasAnswer) iframe.contentWindow?.location.reload();
     } catch {
       /* ignore */

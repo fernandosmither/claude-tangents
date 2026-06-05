@@ -6,9 +6,9 @@ point in a Claude answer — without muddying your main chat.
 Select any text inside a Claude answer, click the injected **↳ Tangent** button, and a
 floating popover opens with that text quoted and the full prior conversation as context.
 Ask your tangential question, get a real streaming back-and-forth, and your main thread is
-never touched. Each tangent is its own (auto-archived) claude.ai conversation, so it uses
-your subscription, stays out of your sidebar, and is re-openable later from an inline
-highlight or the tangent list.
+never touched. Each tangent is its own claude.ai conversation (labelled with a `↳` prefix),
+so it uses your subscription, the model your main chat uses, and is re-openable later from an
+inline highlight or the tangent list.
 
 > Status: early v1. Chrome first; Firefox to follow (built on WXT, which targets both).
 
@@ -27,7 +27,9 @@ Tangent reuses claude.ai's own backend and UI rather than reimplementing them:
 2. It creates a **new, separate conversation** (`POST …/chat_conversations`) and seeds it
    with that context via a single minimal `…/completion` call, using the same model as your
    main chat.
-3. It **archives** that conversation so it never clutters your sidebar.
+3. It labels that conversation with a **`↳` title prefix** so tangents are easy to spot in
+   your sidebar. (claude.ai has no per-conversation archive API, so they can't be fully
+   hidden yet — a future version can group them under a dedicated "Tangents" project.)
 4. It renders the tangent by embedding `https://claude.ai/chat/<id>` in a **same-origin
    iframe** inside the popover and injecting CSS to strip claude.ai's chrome and the seed
    message — so you get claude.ai's real streaming, markdown, code rendering, model picker,
