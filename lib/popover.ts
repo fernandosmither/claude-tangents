@@ -85,11 +85,12 @@ textarea:focus { border-color: #d97757; }
 const STRIP_CSS = `
 nav { display: none !important; }
 [data-testid="page-header"] { display: none !important; }
+[data-testid="wiggle-controls-actions"] { display: none !important; }
+[data-testid^="action-bar"] { display: none !important; }
+div:has(> div > button[data-testid^="action-bar"]) { display: none !important; }
 main { max-width: 100% !important; margin-left: 0 !important; padding: 6px 14px !important; }
 [data-tangent-seed="1"] { display: none !important; }
 `;
-
-let zCounter = 2147483600;
 
 export class TangentPopover {
   readonly host: HTMLDivElement;
@@ -103,6 +104,8 @@ export class TangentPopover {
   private closed = false;
   private pendingConvUuid: string | null = null;
   private generationDone = false;
+  /** The tangent conversation this popover shows (for de-duping + close-on-delete). */
+  convUuid: string | null = null;
 
   constructor(
     private init: PopoverInit,
@@ -122,6 +125,7 @@ export class TangentPopover {
     this.shadow.appendChild(style);
     this.buildShell();
     if (init.existingConvUuid) {
+      this.convUuid = init.existingConvUuid;
       this.mountIframe(init.existingConvUuid);
     } else {
       this.renderCompose();
@@ -130,14 +134,31 @@ export class TangentPopover {
 
   mount(parent: HTMLElement = document.body): this {
     parent.appendChild(this.host);
+    // Now that the host lives in its final document, position + raise it relative to THAT
+    // window (for a sub-tangent that's the top-level page, not the parent tangent's iframe).
+    this.position(this.card);
+    this.card.style.zIndex = String(this.bumpZ());
+    if (this.convUuid) this.host.dataset.tangentConv = this.convUuid;
     return this;
+  }
+
+  /** The window of the document the host is mounted in (the top-level page for sub-tangents). */
+  private ownerWin(): Window {
+    return (this.host.ownerDocument?.defaultView as Window) ?? window;
+  }
+
+  /** A z-index above every other tangent popover, counted on the shared (top-level) window so
+   *  popovers from different frames stack correctly against each other. */
+  private bumpZ(): number {
+    const w = this.ownerWin() as unknown as { __tangentZ?: number };
+    w.__tangentZ = Math.max(w.__tangentZ || 0, 2147483600) + 1;
+    return w.__tangentZ;
   }
 
   private buildShell() {
     const card = document.createElement('div');
     card.className = 'card';
-    card.style.zIndex = String(++zCounter);
-    this.position(card);
+    // position + z-index are set in mount(), once the host's final (top-level) document is known
 
     const head = document.createElement('div');
     head.className = 'head';
@@ -149,7 +170,7 @@ export class TangentPopover {
     close.onclick = () => this.close();
     head.appendChild(close);
     this.enableDrag(card, head);
-    card.addEventListener('mousedown', () => (card.style.zIndex = String(++zCounter)), true);
+    card.addEventListener('mousedown', () => (card.style.zIndex = String(this.bumpZ())), true);
 
     const quote = document.createElement('div');
     quote.className = 'quote';
@@ -288,6 +309,8 @@ export class TangentPopover {
   /** Show a "generating" state; the iframe is mounted only once generation completes. */
   private beginGenerating(convUuid: string) {
     this.pendingConvUuid = convUuid;
+    this.convUuid = convUuid;
+    this.host.dataset.tangentConv = convUuid;
     this.showStatus('Generating the tangent…');
     if (this.generationDone) this.mountIframe(convUuid);
   }
@@ -296,6 +319,7 @@ export class TangentPopover {
     if (this.closed) return;
     this.closed = true;
     this.stripObserver?.disconnect();
+    this.removeShield();
     this.host.remove();
     this.handlers.onClose?.();
   }
@@ -303,12 +327,15 @@ export class TangentPopover {
   // --- positioning / drag / resize ---
 
   private position(card: HTMLElement) {
+    const win = this.ownerWin();
     const r = this.init.anchorRect;
     const w = 460,
       h = 560;
-    let left = r ? Math.min(r.right + 12, window.innerWidth - w - 12) : window.innerWidth - w - 24;
-    let top = r ? Math.min(Math.max(12, r.top), window.innerHeight - h - 12) : 80;
+    // anchored next to the selection (top-level tangents) or centered (sub-tangents / reopens)
+    let left = r ? Math.min(r.right + 12, win.innerWidth - w - 12) : Math.round((win.innerWidth - w) / 2);
+    let top = r ? Math.min(Math.max(12, r.top), win.innerHeight - h - 12) : Math.round((win.innerHeight - h) / 2);
     if (left < 12) left = 12;
+    if (top < 12) top = 12;
     card.style.left = `${left}px`;
     card.style.top = `${top}px`;
   }
@@ -317,51 +344,78 @@ export class TangentPopover {
     let sx = 0,
       sy = 0,
       ox = 0,
-      oy = 0,
-      dragging = false;
+      oy = 0;
+    const move = (e: MouseEvent) => {
+      card.style.left = `${ox + e.clientX - sx}px`;
+      card.style.top = `${oy + e.clientY - sy}px`;
+    };
+    const up = () => {
+      handle.classList.remove('grab');
+      const win = this.ownerWin();
+      win.removeEventListener('mousemove', move);
+      win.removeEventListener('mouseup', up);
+      this.removeShield();
+    };
     handle.addEventListener('mousedown', (e) => {
       if ((e.target as HTMLElement).closest('.iconbtn')) return;
-      dragging = true;
       handle.classList.add('grab');
       sx = e.clientX;
       sy = e.clientY;
       ox = parseFloat(card.style.left);
       oy = parseFloat(card.style.top);
       e.preventDefault();
+      // Listen on the document the card actually lives in (the top page for sub-tangents), and
+      // shield iframes so the pointer keeps reporting to that window mid-drag.
+      this.addShield();
+      const win = this.ownerWin();
+      win.addEventListener('mousemove', move);
+      win.addEventListener('mouseup', up);
     });
-    const move = (e: MouseEvent) => {
-      if (!dragging) return;
-      card.style.left = `${ox + e.clientX - sx}px`;
-      card.style.top = `${oy + e.clientY - sy}px`;
-    };
-    const up = () => {
-      dragging = false;
-      handle.classList.remove('grab');
-    };
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
   }
 
   private enableResize(card: HTMLElement, handle: HTMLElement) {
     let sx = 0,
       sy = 0,
       ow = 0,
-      oh = 0,
-      rz = false;
+      oh = 0;
+    const move = (e: MouseEvent) => {
+      card.style.width = `${Math.max(320, ow + e.clientX - sx)}px`;
+      card.style.height = `${Math.max(280, oh + e.clientY - sy)}px`;
+    };
+    const up = () => {
+      const win = this.ownerWin();
+      win.removeEventListener('mousemove', move);
+      win.removeEventListener('mouseup', up);
+      this.removeShield();
+    };
     handle.addEventListener('mousedown', (e) => {
-      rz = true;
       sx = e.clientX;
       sy = e.clientY;
       ow = card.offsetWidth;
       oh = card.offsetHeight;
       e.preventDefault();
       e.stopPropagation();
+      this.addShield();
+      const win = this.ownerWin();
+      win.addEventListener('mousemove', move);
+      win.addEventListener('mouseup', up);
     });
-    window.addEventListener('mousemove', (e) => {
-      if (!rz) return;
-      card.style.width = `${Math.max(320, ow + e.clientX - sx)}px`;
-      card.style.height = `${Math.max(280, oh + e.clientY - sy)}px`;
-    });
-    window.addEventListener('mouseup', () => (rz = false));
+  }
+
+  /** A transparent, full-window cover placed just under the card while dragging/resizing, so the
+   *  pointer keeps reporting to the top window even when it passes over a (tangent) iframe. */
+  private shield: HTMLElement | null = null;
+  private addShield() {
+    const doc = this.host.ownerDocument;
+    if (!doc) return;
+    const s = doc.createElement('div');
+    const z = Math.max(0, parseInt(this.card.style.zIndex || '0', 10) - 1);
+    s.style.cssText = `position:fixed;inset:0;z-index:${z};`;
+    doc.body.appendChild(s);
+    this.shield = s;
+  }
+  private removeShield() {
+    this.shield?.remove();
+    this.shield = null;
   }
 }

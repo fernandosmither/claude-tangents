@@ -45,12 +45,86 @@ function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+// --- top-level page helpers (popovers from inside a tangent iframe live in the same space) ---
+
+function topWin(): Window {
+  try {
+    return window.top ?? window;
+  } catch {
+    return window;
+  }
+}
+function topDoc(): Document {
+  try {
+    return topWin().document;
+  } catch {
+    return document;
+  }
+}
+/** True when this content script is running inside a tangent's iframe rather than the page. */
+function inSubframe(): boolean {
+  try {
+    return window.top !== window.self;
+  } catch {
+    return true;
+  }
+}
+function bumpTopZ(): number {
+  const w = topWin() as unknown as { __tangentZ?: number };
+  w.__tangentZ = Math.max(w.__tangentZ || 0, 2147483600) + 1;
+  return w.__tangentZ;
+}
+/** An open popover for `convUuid`, if any — found in the shared top-level document, so it works
+ *  regardless of which frame opened it. */
+function findPopoverHost(convUuid: string): HTMLElement | null {
+  try {
+    return topDoc().querySelector<HTMLElement>(`[data-tangent-popover][data-tangent-conv="${CSS.escape(convUuid)}"]`);
+  } catch {
+    return null;
+  }
+}
+/** Raise + recenter an already-open popover (cross-frame, via its DOM). */
+function focusPopoverHost(host: HTMLElement): void {
+  const card = host.shadowRoot?.querySelector<HTMLElement>('.card');
+  if (!card) return;
+  const win = topWin();
+  card.style.zIndex = String(bumpTopZ());
+  const w = card.offsetWidth || 460;
+  const h = card.offsetHeight || 560;
+  card.style.left = `${Math.max(8, Math.round((win.innerWidth - w) / 2))}px`;
+  card.style.top = `${Math.max(8, Math.round((win.innerHeight - h) / 2))}px`;
+  card.animate?.([{ outline: '2px solid #d97757' }, { outline: '2px solid transparent' }], { duration: 700 });
+}
+/** Close an open popover for a tangent (cross-frame) by triggering its ✕. */
+function closePopoverFor(convUuid: string): void {
+  findPopoverHost(convUuid)?.shadowRoot?.querySelector<HTMLElement>('.iconbtn')?.click();
+}
+
+/** A tangent plus its sub-tangents (tangents created from inside it), built by walking each
+ *  tangent's own conversation for child tangents. */
+interface TangentNode extends TangentRecord {
+  children: TangentNode[];
+}
+async function buildTangentTree(conv: string, seen = new Set<string>()): Promise<TangentNode[]> {
+  if (seen.has(conv)) return []; // guard against any accidental cycle
+  seen.add(conv);
+  const list = await getTangents(conv);
+  const out: TangentNode[] = [];
+  for (const t of list) {
+    out.push({ ...t, children: await buildTangentTree(t.tangentConvUuid, seen) });
+  }
+  return out;
+}
+function countTree(nodes: TangentNode[]): number {
+  return nodes.reduce((n, t) => n + 1 + countTree(t.children), 0);
+}
+
 
 class TangentApp {
   private popovers = new Set<TangentPopover>();
   private indicator: HTMLButtonElement | null = null;
   private dropdown: HTMLDivElement | null = null;
-  private tangentsCache: TangentRecord[] = [];
+  private tangentsCache: TangentNode[] = [];
   private lastConv: string | null = null;
   private storageBannerShown = false;
 
@@ -88,11 +162,31 @@ class TangentApp {
     document.addEventListener('selectionchange', () => {
       if (window.getSelection()?.isCollapsed) this.removeToolbarPill();
     });
+    // sub-tangents created inside a tangent iframe ask the top page to open their window here
+    if (!inSubframe()) window.addEventListener('message', (e) => this.onMessage(e));
     // SPA navigation
     this.watchNavigation();
     this.watchToolbar();
     this.onNavigate();
-    onTangentsChanged(() => this.refreshPill());
+    onTangentsChanged(() => {
+      this.refreshPill(); // top page: indicator + list (no-op inside an iframe)
+      this.decorateAnchors(); // each frame re-marks its own conversation's highlights
+    });
+  }
+
+  private onMessage(e: MessageEvent) {
+    if (e.origin !== location.origin) return;
+    const d = e.data as {
+      source?: string;
+      kind?: string;
+      mainConv?: string;
+      info?: { highlight: string; prefix: string; suffix: string };
+    } | null;
+    if (!d || d.source !== 'claude-tangent' || d.kind !== 'open-compose' || !d.mainConv || !d.info) return;
+    // messageEl isn't needed downstream (createTangent uses highlight/prefix/suffix), and DOM
+    // nodes can't cross the postMessage boundary anyway.
+    const info = { highlight: d.info.highlight, prefix: d.info.prefix, suffix: d.info.suffix } as SelectionInfo;
+    this.openCompose(info, null, d.mainConv);
   }
 
   // --- selection → a "Tangent" pill directly under claude.ai's native Reply toolbar ---
@@ -146,7 +240,21 @@ class TangentApp {
         sel && sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : pill.getBoundingClientRect();
       this.removeToolbarPill();
       window.getSelection()?.removeAllRanges();
-      this.openCompose(info, r);
+      if (inSubframe()) {
+        // Inside a tangent iframe: hand off to the top-level page so the sub-tangent window opens
+        // in the same space as everything else (and the top page owns/positions it natively).
+        topWin().postMessage(
+          {
+            source: 'claude-tangent',
+            kind: 'open-compose',
+            mainConv: convUuidFromPath(),
+            info: { highlight: info.highlight, prefix: info.prefix, suffix: info.suffix },
+          },
+          location.origin,
+        );
+      } else {
+        this.openCompose(info, r);
+      }
     });
     pill.appendChild(btn);
     document.body.appendChild(pill);
@@ -159,8 +267,11 @@ class TangentApp {
 
   // --- compose + create tangent ---
 
-  private openCompose(info: SelectionInfo, rect: DOMRect) {
-    const mainConv = convUuidFromPath();
+  /** Open the compose popover. Always runs in the top-level page (sub-tangents are forwarded here
+   *  from their iframe via postMessage), so the window lives in the same space as every tangent.
+   *  `rect` anchors it to the selection for a top-level tangent, or is null (centered) for a
+   *  sub-tangent, whose selection rect belongs to the iframe's coordinate space. */
+  private openCompose(info: SelectionInfo, rect: DOMRect | null, mainConv = convUuidFromPath()) {
     if (!mainConv) return;
     let popover: TangentPopover;
     popover = new TangentPopover(
@@ -238,6 +349,10 @@ class TangentApp {
   }
 
   private reopen(rec: TangentRecord) {
+    // don't open a second window for the same tangent — focus + center the existing one (found in
+    // the shared top document, so this holds even for a sub-tangent opened from another frame).
+    const open = findPopoverHost(rec.tangentConvUuid);
+    if (open) return focusPopoverHost(open);
     let popover: TangentPopover;
     popover = new TangentPopover(
       { highlight: rec.highlightText, existingConvUuid: rec.tangentConvUuid, title: rec.title },
@@ -249,13 +364,15 @@ class TangentApp {
   // --- top-bar tangent indicator + dropdown list ---
 
   private async refreshPill() {
+    if (inSubframe()) return; // the indicator + list live only in the top-level page
     const conv = convUuidFromPath();
     if (!conv) {
       this.tangentsCache = [];
       return this.removeIndicator();
     }
     try {
-      this.tangentsCache = await getTangents(conv);
+      // the whole tree for this conversation: top-level tangents and their sub-tangents
+      this.tangentsCache = await buildTangentTree(conv);
     } catch (e) {
       return this.onStorageError(e);
     }
@@ -265,6 +382,7 @@ class TangentApp {
   /** Place/update the indicator as the leftmost item in claude.ai's top action bar
    *  (where the artifacts icon sits, just left of Share). */
   private renderIndicator() {
+    if (inSubframe()) return this.removeIndicator();
     if (!convUuidFromPath() || !this.tangentsCache.length) return this.removeIndicator();
     const toolbar = document.querySelector('[data-testid="wiggle-controls-actions"]');
     if (!toolbar) return; // top bar not rendered yet — the toolbar observer retries
@@ -273,10 +391,10 @@ class TangentApp {
       this.indicator = this.buildIndicator();
       toolbar.prepend(this.indicator); // leftmost
     }
-    const n = this.tangentsCache.length;
+    const n = countTree(this.tangentsCache); // top-level tangents + every nested sub-tangent
     const count = this.indicator.querySelector('[data-count]');
     if (count) count.textContent = String(n);
-    this.indicator.title = `${n} tangent${n > 1 ? 's' : ''}`;
+    this.indicator.title = `${n} tangent${n !== 1 ? 's' : ''}`;
   }
 
   private buildIndicator(): HTMLButtonElement {
@@ -300,8 +418,7 @@ class TangentApp {
 
   private toggleDropdown(anchor: HTMLElement) {
     if (this.dropdown) return this.removeDropdown();
-    const conv = convUuidFromPath();
-    if (!conv) return;
+    if (!convUuidFromPath()) return;
     const list = document.createElement('div');
     list.setAttribute('data-tangent-dropdown', '');
     const r = anchor.getBoundingClientRect();
@@ -310,39 +427,52 @@ class TangentApp {
       'z-index:2147483640;min-width:240px;max-width:360px;max-height:60vh;overflow:auto;border-radius:10px;' +
       'background:#2b2b2b;color:#ececec;border:1px solid rgba(128,128,128,.25);' +
       'box-shadow:0 12px 32px rgba(0,0,0,.32);font:13px/1.4 ui-sans-serif,system-ui,sans-serif;';
-    for (const t of this.tangentsCache) {
-      const row = document.createElement('div');
-      row.style.cssText =
-        'display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(128,128,128,.15);';
-      const open = document.createElement('button');
-      open.textContent = t.title;
-      open.title = 'Reopen tangent';
-      open.style.cssText =
-        'flex:1;text-align:left;border:0;background:transparent;color:inherit;cursor:pointer;font:13px/1.3 inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      open.onclick = () => {
-        this.removeDropdown();
-        this.reopen(t);
-      };
-      const del = document.createElement('button');
-      del.textContent = '🗑';
-      del.title = 'Delete tangent';
-      del.style.cssText = 'border:0;background:transparent;cursor:pointer;opacity:.6;';
-      del.onclick = async () => {
-        try {
-          await removeTangent(conv, t.tangentId);
-        } catch (e) {
-          return this.onStorageError(e);
-        }
-        this.removeDropdown();
-        this.refreshPill();
-        this.decorateAnchors();
-      };
-      row.append(open, del);
-      list.appendChild(row);
-    }
+    // sub-tangents render indented under the tangent they came from
+    const renderNodes = (nodes: TangentNode[], depth: number) => {
+      for (const t of nodes) {
+        list.appendChild(this.buildDropdownRow(t, depth));
+        if (t.children.length) renderNodes(t.children, depth + 1);
+      }
+    };
+    renderNodes(this.tangentsCache, 0);
     document.body.appendChild(list);
     this.dropdown = list;
     setTimeout(() => document.addEventListener('mousedown', this.onDocClick), 0);
+  }
+
+  private buildDropdownRow(t: TangentNode, depth: number): HTMLElement {
+    const row = document.createElement('div');
+    row.style.cssText =
+      `display:flex;gap:8px;align-items:center;padding:8px 10px;padding-left:${10 + depth * 18}px;` +
+      'border-bottom:1px solid rgba(128,128,128,.15);';
+    const open = document.createElement('button');
+    open.textContent = t.title;
+    open.title = 'Reopen tangent';
+    open.style.cssText =
+      'flex:1;text-align:left;border:0;background:transparent;color:inherit;cursor:pointer;font:13px/1.3 inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    open.onclick = () => {
+      this.removeDropdown();
+      this.reopen(t);
+    };
+    const del = document.createElement('button');
+    del.textContent = '🗑';
+    del.title = 'Delete tangent';
+    del.style.cssText = 'border:0;background:transparent;cursor:pointer;opacity:.6;';
+    del.onclick = async () => {
+      try {
+        // a tangent is stored under the conversation it was created from (its parent, for a
+        // sub-tangent) — delete it there, not under the page's conversation.
+        await removeTangent(t.mainConvUuid, t.tangentId);
+      } catch (e) {
+        return this.onStorageError(e);
+      }
+      closePopoverFor(t.tangentConvUuid); // if a window for it is open, close it too
+      this.removeDropdown();
+      this.refreshPill();
+      this.decorateAnchors();
+    };
+    row.append(open, del);
+    return row;
   }
 
   private onDocClick = (e: MouseEvent) => {
