@@ -22,20 +22,27 @@ questions their own space and keeps your main conversation clean.
 
 Tangent reuses claude.ai's own backend and UI rather than reimplementing them:
 
-1. On **↳ Tangent**, it reads the current conversation's message tree and builds a faithful
-   transcript up to the highlighted answer, plus the quoted excerpt and your question.
+1. On **↳ Tangent** (injected just under claude.ai's native Reply toolbar), it reads the
+   current conversation's message tree and builds a faithful transcript up to the highlighted
+   answer — including any **document attachments' extracted text** — plus the quoted excerpt
+   and your question.
 2. It creates a **new, separate conversation** (`POST …/chat_conversations`) and seeds it
    with that context via a single minimal `…/completion` call, using the same model as your
    main chat.
-3. It labels that conversation with a **`↳` title prefix** so tangents are easy to spot in
-   your sidebar. (claude.ai has no per-conversation archive API, so they can't be fully
-   hidden yet — a future version can group them under a dedicated "Tangents" project.)
+3. It files that conversation under an auto-created **"↳ Tangents" project**, which removes
+   it from your sidebar's Recents (claude.ai hides project conversations from the flat list)
+   while keeping it revisitable.
 4. It renders the tangent by embedding `https://claude.ai/chat/<id>` in a **same-origin
    iframe** inside the popover and injecting CSS to strip claude.ai's chrome and the seed
-   message — so you get claude.ai's real streaming, markdown, code rendering, model picker,
-   and follow-up composer for free.
+   message — so you get claude.ai's real markdown, code rendering, model picker, and
+   **live-streaming follow-up turns** for free. (The seeded first answer renders when
+   generation completes; claude.ai's iframe can't attach to an in-flight external stream.)
 5. Tangents are remembered in local extension storage and surfaced as an inline highlight
    (CSS Custom Highlight API — no DOM mutation) plus a per-conversation list.
+
+All claude.ai-internal DOM selectors live in `lib/selectors.ts`; if a claude.ai update breaks
+something, that's the first place to look — and the content script fails quietly (it never
+breaks the page).
 
 This relies on claude.ai's **internal, undocumented API**, reverse-engineered from the live
 app. It may break when claude.ai changes; see `lib/claude.ts` for the endpoints used.
