@@ -222,10 +222,10 @@ export class TangentPopover {
     this.iframe = iframe;
     const overlay = document.createElement('div');
     overlay.className = 'status';
-    overlay.innerHTML = `<div class="dot"></div><div>Loading the tangent…</div>`;
+    overlay.innerHTML = `<div class="dot"></div><div>Generating the tangent…</div>`;
     this.overlay = overlay;
     this.body.replaceChildren(iframe, overlay);
-    setTimeout(() => this.reveal(), 4000); // safety: reveal even if the seed marker never appears
+    setTimeout(() => this.reveal(), 60000); // last-resort reveal so it can never spin forever
   }
 
   private reveal() {
@@ -263,13 +263,15 @@ export class TangentPopover {
       st.textContent = STRIP_CSS;
       doc.head.appendChild(st);
     }
-    // mark the seed (first user message bubble) so STRIP_CSS hides it, then reveal
+    // mark the seed (first user message bubble) so STRIP_CSS hides it
     const firstUser = doc.querySelector('[data-testid="user-message"]');
     if (firstUser) {
       const bubble = (firstUser.closest('[data-user-message-bubble]') as HTMLElement) || (firstUser as HTMLElement);
       if (bubble.getAttribute('data-tangent-seed') !== '1') bubble.setAttribute('data-tangent-seed', '1');
-      this.reveal();
     }
+    // reveal only once Claude's answer is actually rendered — during external generation the
+    // iframe sits on the "New chat" page, so revealing earlier would flash that.
+    if (doc.querySelector('.font-claude-response, .font-claude-message')) this.reveal();
   }
 
   /** Called when the seed generation has finished; ensures the answer is rendered. */
