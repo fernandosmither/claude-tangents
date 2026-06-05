@@ -29,16 +29,18 @@ Tangent reuses claude.ai's own backend and UI rather than reimplementing them:
 2. It creates a **new, separate conversation** (`POST …/chat_conversations`) and seeds it
    with that context via a single minimal `…/completion` call, using the same model as your
    main chat.
-3. It files that conversation under an auto-created **"↳ Tangents" project**, which removes
-   it from your sidebar's Recents (claude.ai hides project conversations from the flat list)
-   while keeping it revisitable.
+3. It files that conversation under an auto-created **"↳ Tangents" project** for organization,
+   and — since claude.ai has **no API** to keep a conversation out of Recents — the content
+   script **hides the `↳` tangent rows from your sidebar** client-side. They stay reachable
+   via the top-bar indicator and the project.
 4. It renders the tangent by embedding `https://claude.ai/chat/<id>` in a **same-origin
    iframe** inside the popover and injecting CSS to strip claude.ai's chrome and the seed
    message — so you get claude.ai's real markdown, code rendering, model picker, and
    **live-streaming follow-up turns** for free. (The seeded first answer renders when
    generation completes; claude.ai's iframe can't attach to an in-flight external stream.)
 5. Tangents are remembered in local extension storage and surfaced as an inline highlight
-   (CSS Custom Highlight API — no DOM mutation) plus a per-conversation list.
+   (CSS Custom Highlight API — no DOM mutation) plus an indicator in claude.ai's **top action
+   bar** (left of Share) that opens the per-conversation list.
 
 All claude.ai-internal DOM selectors live in `lib/selectors.ts`; if a claude.ai update breaks
 something, that's the first place to look — and the content script fails quietly (it never
