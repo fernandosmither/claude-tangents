@@ -26,12 +26,24 @@ function local(): LocalArea {
 }
 
 async function readAll(): Promise<Store> {
-  const got = await local().get(KEY);
-  return (got[KEY] as Store) || {};
+  try {
+    const got = await local().get(KEY);
+    return (got[KEY] as Store) || {};
+  } catch {
+    // Storage unavailable, or the extension context was invalidated (e.g. the extension
+    // was just reloaded while this old content script is still alive). Degrade quietly.
+    return {};
+  }
 }
 
 async function writeAll(store: Store): Promise<void> {
-  await local().set({ [KEY]: store });
+  try {
+    await local().set({ [KEY]: store });
+  } catch (e) {
+    // Swallow the transient "Extension context invalidated" (extension reload); re-throw
+    // genuine failures so the caller can surface them.
+    if (!/context invalidated/i.test(String(e))) throw e;
+  }
 }
 
 export async function getTangents(mainConvUuid: string): Promise<TangentRecord[]> {
