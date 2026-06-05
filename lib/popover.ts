@@ -101,6 +101,8 @@ export class TangentPopover {
   private overlay: HTMLDivElement | null = null;
   private revealed = false;
   private closed = false;
+  private pendingConvUuid: string | null = null;
+  private generationDone = false;
 
   constructor(
     private init: PopoverInit,
@@ -189,7 +191,7 @@ export class TangentPopover {
       try {
         const convUuid = await this.handlers.createTangent(q);
         if (this.closed) return;
-        this.mountIframe(convUuid);
+        this.beginGenerating(convUuid);
       } catch (e) {
         if (this.closed) return;
         err.textContent = e instanceof Error ? e.message : String(e);
@@ -224,10 +226,10 @@ export class TangentPopover {
     this.iframe = iframe;
     const overlay = document.createElement('div');
     overlay.className = 'status';
-    overlay.innerHTML = `<div class="dot"></div><div>Generating the tangent…</div>`;
+    overlay.innerHTML = `<div class="dot"></div><div>Loading the tangent…</div>`;
     this.overlay = overlay;
     this.body.replaceChildren(iframe, overlay);
-    setTimeout(() => this.reveal(), 60000); // last-resort reveal so it can never spin forever
+    setTimeout(() => this.reveal(), 20000); // last-resort reveal so it can never spin forever
   }
 
   private reveal() {
@@ -276,17 +278,18 @@ export class TangentPopover {
     if (doc.querySelector(SEL.assistantMessage)) this.reveal();
   }
 
-  /** Called when the seed generation has finished; ensures the answer is rendered. */
+  /** Generation finished and the conversation is filed — render it now (on the finished conv,
+   *  which loads reliably, unlike a conversation that is still generating externally). */
   notifyGenerationComplete() {
-    const iframe = this.iframe;
-    if (!iframe || this.closed) return;
-    try {
-      const doc = iframe.contentDocument;
-      const hasAnswer = doc?.querySelector(SEL.assistantMessage);
-      if (!hasAnswer) iframe.contentWindow?.location.reload();
-    } catch {
-      /* ignore */
-    }
+    this.generationDone = true;
+    if (this.pendingConvUuid && !this.iframe && !this.closed) this.mountIframe(this.pendingConvUuid);
+  }
+
+  /** Show a "generating" state; the iframe is mounted only once generation completes. */
+  private beginGenerating(convUuid: string) {
+    this.pendingConvUuid = convUuid;
+    this.showStatus('Generating the tangent…');
+    if (this.generationDone) this.mountIframe(convUuid);
   }
 
   close() {

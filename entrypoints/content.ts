@@ -160,15 +160,18 @@ class TangentApp {
         throw new Error(`Claude rejected the request (HTTP ${res.status}).`);
       }
 
-      // generation runs in the background; reload the iframe once it's done so the
-      // first answer is guaranteed to render even if mid-stream attach didn't work.
+      // When generation finishes: file the tangent under the "↳ Tangents" project (AFTER
+      // generation, so the move never disturbs the in-flight message), then tell the popover
+      // to render the finished conversation. We render only when complete because claude.ai's
+      // iframe shows "New chat" / "message wasn't sent" while a conversation generates externally.
       drain(res)
         .catch(() => {})
-        .finally(() => getPopover()?.notifyGenerationComplete());
-      // file the tangent under the "↳ Tangents" project so it's hidden from the sidebar
-      getOrCreateTangentsProject(org)
-        .then((proj) => moveToProject(tangentConv, proj, org))
-        .catch((e) => console.warn('[Tangent] could not file under the Tangents project', e));
+        .finally(async () => {
+          await getOrCreateTangentsProject(org)
+            .then((proj) => moveToProject(tangentConv, proj, org))
+            .catch((e) => console.warn('[Tangent] could not file under the Tangents project', e));
+          getPopover()?.notifyGenerationComplete();
+        });
 
       const rec: TangentRecord = {
         tangentId: uid(),
