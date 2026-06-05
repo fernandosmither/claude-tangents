@@ -84,18 +84,21 @@ class TangentApp {
   private injectToolbarButton(wrapper: HTMLElement, info: SelectionInfo) {
     if (document.querySelector('[data-tangent-toolbar-pill]')) return;
     const reply = wrapper.querySelector('button');
+    wrapper.style.transform = ''; // reset in case claude.ai is reusing the toolbar element
     const rect = wrapper.getBoundingClientRect();
-    // a separate pill placed directly *under* the native Reply toolbar, matching its look
+
+    // a matching pill placed where the toolbar currently sits…
     const pill = document.createElement('div');
     pill.setAttribute('data-tangent-toolbar-pill', '');
     pill.className = wrapper.className; // clone the native pill (dark, rounded, shadow, blur)
     pill.style.position = 'fixed';
     pill.style.left = `${Math.round(rect.left)}px`;
-    pill.style.top = `${Math.round(rect.bottom + 5)}px`;
+    pill.style.top = `${Math.round(rect.top)}px`;
     pill.style.zIndex = '2147483640';
     const btn = document.createElement('button');
     if (reply) btn.className = reply.className; // match the native button's layout + hover
     btn.style.color = '#e8967a'; // our accent, legible on the dark toolbar
+    btn.style.justifyContent = 'center';
     btn.innerHTML = '↳&nbsp;Tangent';
     btn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection alive
     btn.addEventListener('click', () => {
@@ -108,6 +111,11 @@ class TangentApp {
     });
     pill.appendChild(btn);
     document.body.appendChild(pill);
+
+    // …and lift the native Reply toolbar up by our height, so Reply stacks *above* ours
+    // and both stay clear of the selected text. (transform survives claude.ai's re-renders.)
+    const ph = pill.getBoundingClientRect().height || 34;
+    wrapper.style.transform = `translateY(${-(ph + 2)}px)`;
   }
 
   // --- compose + create tangent ---
