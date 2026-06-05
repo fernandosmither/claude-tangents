@@ -4,7 +4,9 @@ import {
   deleteConversation,
   drain,
   getChatOrgUuid,
+  getOrCreateTangentsProject,
   getTree,
+  moveToProject,
   sendCompletion,
 } from '@/lib/claude';
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
@@ -163,8 +165,10 @@ class TangentApp {
       drain(res)
         .catch(() => {})
         .finally(() => getPopover()?.notifyGenerationComplete());
-      // NOTE: claude.ai has no per-conversation archive API, so tangents are labelled with a
-      // "↳" title prefix instead of hidden (a future option is grouping them under a project).
+      // file the tangent under the "↳ Tangents" project so it's hidden from the sidebar
+      getOrCreateTangentsProject(org)
+        .then((proj) => moveToProject(tangentConv, proj, org))
+        .catch((e) => console.warn('[Tangent] could not file under the Tangents project', e));
 
       const rec: TangentRecord = {
         tangentId: uid(),

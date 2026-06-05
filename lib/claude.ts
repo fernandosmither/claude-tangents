@@ -150,7 +150,54 @@ export async function deleteConversation(convUuid: string, org?: string): Promis
   return res.status === 204 || res.ok;
 }
 
-// NOTE: claude.ai exposes no per-conversation archive endpoint (verified live — the
-// conversation menu only offers star/rename/move-to-project/delete; `is_archived` is a
-// *project* flag). Tangents are therefore labelled with a "↳" title prefix rather than
-// hidden. A future option is grouping them under a dedicated project (move-to-project API).
+// claude.ai exposes no per-conversation archive endpoint, but the sidebar *hides* any
+// conversation that belongs to a project (verified live). So we file tangents under a
+// dedicated "↳ Tangents" project to keep them out of Recents while staying revisitable.
+
+const PROJECT_NAME = '↳ Tangents';
+const PROJECT_KEY = 'tangent.projectUuid';
+
+/** Find (or create) the "↳ Tangents" project. Cached in sessionStorage. */
+export async function getOrCreateTangentsProject(org?: string): Promise<string> {
+  const o = org || (await getChatOrgUuid());
+  const cached = sessionStorage.getItem(PROJECT_KEY);
+  if (cached) return cached;
+  const res = await api(`/organizations/${o}/projects`);
+  if (res.ok) {
+    const projects = await res.json();
+    const found =
+      Array.isArray(projects) && projects.find((p: { name?: string }) => p.name === PROJECT_NAME);
+    if (found) {
+      sessionStorage.setItem(PROJECT_KEY, found.uuid);
+      return found.uuid;
+    }
+  }
+  const create = await api(`/organizations/${o}/projects`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: PROJECT_NAME,
+      description: 'Side-conversations created by the Tangent extension.',
+      is_private: true,
+    }),
+  });
+  if (!create.ok && create.status !== 201) throw new Error(`createProject ${create.status}`);
+  const proj = await create.json();
+  sessionStorage.setItem(PROJECT_KEY, proj.uuid);
+  return proj.uuid;
+}
+
+/** Move a conversation into a project (which removes it from the sidebar Recents). */
+export async function moveToProject(
+  convUuid: string,
+  projectUuid: string,
+  org?: string,
+): Promise<boolean> {
+  const o = org || (await getChatOrgUuid());
+  const res = await api(`/organizations/${o}/chat_conversations/${convUuid}?rendering_mode=raw`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ project_uuid: projectUuid }),
+  });
+  return res.ok || res.status === 202;
+}
