@@ -1,5 +1,25 @@
 import { messageText, pathTo } from './claude';
-import type { ConversationTree } from './types';
+import type { ChatMessage, ConversationTree } from './types';
+
+/** Render one message including any document attachments' extracted text + image notes. */
+function renderMessage(m: ChatMessage): string {
+  const role = m.sender === 'human' ? 'Human' : 'Assistant';
+  const parts: string[] = [];
+  const body = messageText(m);
+  if (body) parts.push(body);
+  // Document attachments are stored as extracted text — include it so the tangent is
+  // faithful for PDF/doc context (this content isn't in the message text otherwise).
+  for (const a of m.attachments || []) {
+    if (a.extracted_content) parts.push(`[Attached document: ${a.file_name}]\n${a.extracted_content}`);
+    else if (a.file_name) parts.push(`[Attached document: ${a.file_name}]`);
+  }
+  // Images/binary files are noted textually (their pixels aren't carried into v1 tangents).
+  const files = (m.files_v2?.length ? m.files_v2 : m.files) || [];
+  for (const f of files) {
+    parts.push(`[Attached image: ${f.file_name || 'file'}]`);
+  }
+  return parts.length ? `${role}: ${parts.join('\n\n')}` : '';
+}
 
 export interface SeedInput {
   tree: ConversationTree;
@@ -17,14 +37,7 @@ export interface SeedInput {
  */
 export function buildSeed({ tree, anchorMessageUuid, highlight, question }: SeedInput): string {
   const chain = pathTo(tree, anchorMessageUuid);
-  const transcript = chain
-    .map((m) => {
-      const role = m.sender === 'human' ? 'Human' : 'Assistant';
-      const body = messageText(m);
-      return body ? `${role}: ${body}` : '';
-    })
-    .filter(Boolean)
-    .join('\n\n');
+  const transcript = chain.map(renderMessage).filter(Boolean).join('\n\n');
 
   return [
     '<prior_conversation>',
