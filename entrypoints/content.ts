@@ -12,7 +12,13 @@ import {
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
 import { SEL, findSelectionToolbar } from '@/lib/selectors';
 import { buildSeed } from '@/lib/seed';
-import { addTangent, getTangents, onTangentsChanged, removeTangent } from '@/lib/storage';
+import {
+  addTangent,
+  getTangents,
+  isContextInvalidated,
+  onTangentsChanged,
+  removeTangent,
+} from '@/lib/storage';
 import type { TangentRecord } from '@/lib/types';
 
 export default defineContentScript({
@@ -42,8 +48,37 @@ function uid(): string {
 
 class TangentApp {
   private popovers = new Set<TangentPopover>();
-  private pill: HTMLDivElement | null = null;
+  private indicator: HTMLButtonElement | null = null;
+  private dropdown: HTMLDivElement | null = null;
+  private tangentsCache: TangentRecord[] = [];
   private lastConv: string | null = null;
+  private storageBannerShown = false;
+
+  /** A storage op failed. If the extension was reloaded under this page, tell the user to
+   *  reload it (the only fix); otherwise surface the real error. */
+  private onStorageError(e: unknown) {
+    if (isContextInvalidated(e)) this.showReloadBanner();
+    else console.error('[Tangent] storage error', e);
+  }
+
+  private showReloadBanner() {
+    if (this.storageBannerShown || document.querySelector('[data-tangent-reload-banner]')) return;
+    this.storageBannerShown = true;
+    const b = document.createElement('div');
+    b.setAttribute('data-tangent-reload-banner', '');
+    b.style.cssText =
+      'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:2147483646;' +
+      'background:#d97757;color:#fff;font:600 13px/1.4 ui-sans-serif,system-ui,sans-serif;' +
+      'padding:9px 14px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.3);display:flex;gap:12px;align-items:center;';
+    const msg = document.createElement('span');
+    msg.textContent = '↳ Tangent was updated — reload this page (⌘R) to keep saving tangents.';
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.style.cssText = 'border:0;background:transparent;color:#fff;cursor:pointer;font-size:14px;opacity:.85;';
+    x.onclick = () => b.remove();
+    b.append(msg, x);
+    document.body.appendChild(b);
+  }
 
   start() {
     document.addEventListener('mouseup', (e) => {
@@ -55,6 +90,7 @@ class TangentApp {
     });
     // SPA navigation
     this.watchNavigation();
+    this.watchToolbar();
     this.onNavigate();
     onTangentsChanged(() => this.refreshPill());
   }
@@ -192,7 +228,7 @@ class TangentApp {
         this.refreshPill();
         this.decorateAnchors();
       } catch (e) {
-        console.warn('[Tangent] tangent created but not saved locally', e);
+        this.onStorageError(e); // tangent still created; prompt a reload if storage is dead
       }
       return tangentConv;
     } catch (err) {
@@ -210,36 +246,71 @@ class TangentApp {
     this.popovers.add(popover);
   }
 
-  // --- persistent tangent list (bottom-left pill) ---
+  // --- top-bar tangent indicator + dropdown list ---
 
   private async refreshPill() {
     const conv = convUuidFromPath();
-    if (!conv) return this.removePill();
-    const tangents = await getTangents(conv);
-    if (!tangents.length) return this.removePill();
-    if (!this.pill) {
-      const p = document.createElement('div');
-      p.setAttribute('data-tangent-pill', '');
-      p.style.cssText =
-        'position:fixed;left:14px;bottom:14px;z-index:2147483630;font:600 12px/1 ui-sans-serif,system-ui,sans-serif;';
-      document.body.appendChild(p);
-      this.pill = p;
+    if (!conv) {
+      this.tangentsCache = [];
+      return this.removeIndicator();
     }
-    this.pill.innerHTML = '';
-    const badge = document.createElement('button');
-    badge.textContent = `↳ ${tangents.length} tangent${tangents.length > 1 ? 's' : ''}`;
-    badge.style.cssText =
-      'padding:7px 11px;color:#fff;background:#d97757;border:0;border-radius:18px;box-shadow:0 3px 12px rgba(0,0,0,.25);cursor:pointer;';
+    try {
+      this.tangentsCache = await getTangents(conv);
+    } catch (e) {
+      return this.onStorageError(e);
+    }
+    this.renderIndicator();
+  }
+
+  /** Place/update the indicator as the leftmost item in claude.ai's top action bar
+   *  (where the artifacts icon sits, just left of Share). */
+  private renderIndicator() {
+    if (!convUuidFromPath() || !this.tangentsCache.length) return this.removeIndicator();
+    const toolbar = document.querySelector('[data-testid="wiggle-controls-actions"]');
+    if (!toolbar) return; // top bar not rendered yet — the toolbar observer retries
+    if (!this.indicator || !toolbar.contains(this.indicator)) {
+      this.indicator?.remove();
+      this.indicator = this.buildIndicator();
+      toolbar.prepend(this.indicator); // leftmost
+    }
+    const n = this.tangentsCache.length;
+    const count = this.indicator.querySelector('[data-count]');
+    if (count) count.textContent = String(n);
+    this.indicator.title = `${n} tangent${n > 1 ? 's' : ''}`;
+  }
+
+  private buildIndicator(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.setAttribute('data-tangent-indicator', '');
+    btn.style.cssText =
+      'display:inline-flex;align-items:center;gap:5px;height:34px;padding:0 9px;margin-right:6px;border:0;' +
+      'border-radius:9px;background:transparent;cursor:pointer;font:600 12px/1 ui-sans-serif,system-ui,sans-serif;transition:background .12s;';
+    btn.onmouseenter = () => (btn.style.background = 'rgba(255,255,255,.09)');
+    btn.onmouseleave = () => (btn.style.background = 'transparent');
+    btn.innerHTML =
+      '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v8a4 4 0 0 0 4 4h6"/>' +
+      '<path d="M14 13l3 3-3 3"/></svg><span data-count style="color:#d97757">0</span>';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown(btn);
+    });
+    return btn;
+  }
+
+  private toggleDropdown(anchor: HTMLElement) {
+    if (this.dropdown) return this.removeDropdown();
+    const conv = convUuidFromPath();
+    if (!conv) return;
     const list = document.createElement('div');
+    list.setAttribute('data-tangent-dropdown', '');
+    const r = anchor.getBoundingClientRect();
     list.style.cssText =
-      'display:none;margin-bottom:8px;max-width:320px;max-height:50vh;overflow:auto;background:#fff;color:#1a1a1a;' +
-      'border:1px solid rgba(0,0,0,.15);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.2);';
-    if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      list.style.background = '#2b2b2b';
-      list.style.color = '#ececec';
-    }
-    badge.onclick = () => (list.style.display = list.style.display === 'none' ? 'block' : 'none');
-    for (const t of tangents) {
+      `position:fixed;top:${Math.round(r.bottom + 6)}px;right:${Math.round(Math.max(8, window.innerWidth - r.right))}px;` +
+      'z-index:2147483640;min-width:240px;max-width:360px;max-height:60vh;overflow:auto;border-radius:10px;' +
+      'background:#2b2b2b;color:#ececec;border:1px solid rgba(128,128,128,.25);' +
+      'box-shadow:0 12px 32px rgba(0,0,0,.32);font:13px/1.4 ui-sans-serif,system-ui,sans-serif;';
+    for (const t of this.tangentsCache) {
       const row = document.createElement('div');
       row.style.cssText =
         'display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(128,128,128,.15);';
@@ -249,7 +320,7 @@ class TangentApp {
       open.style.cssText =
         'flex:1;text-align:left;border:0;background:transparent;color:inherit;cursor:pointer;font:13px/1.3 inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
       open.onclick = () => {
-        list.style.display = 'none';
+        this.removeDropdown();
         this.reopen(t);
       };
       const del = document.createElement('button');
@@ -257,19 +328,51 @@ class TangentApp {
       del.title = 'Delete tangent';
       del.style.cssText = 'border:0;background:transparent;cursor:pointer;opacity:.6;';
       del.onclick = async () => {
-        await removeTangent(conv, t.tangentId);
+        try {
+          await removeTangent(conv, t.tangentId);
+        } catch (e) {
+          return this.onStorageError(e);
+        }
+        this.removeDropdown();
         this.refreshPill();
         this.decorateAnchors();
       };
       row.append(open, del);
       list.appendChild(row);
     }
-    this.pill.append(list, badge);
+    document.body.appendChild(list);
+    this.dropdown = list;
+    setTimeout(() => document.addEventListener('mousedown', this.onDocClick), 0);
   }
 
-  private removePill() {
-    this.pill?.remove();
-    this.pill = null;
+  private onDocClick = (e: MouseEvent) => {
+    const t = e.target as Node;
+    if (this.dropdown && !this.dropdown.contains(t) && !this.indicator?.contains(t)) this.removeDropdown();
+  };
+
+  private removeDropdown() {
+    document.removeEventListener('mousedown', this.onDocClick);
+    this.dropdown?.remove();
+    this.dropdown = null;
+  }
+
+  private removeIndicator() {
+    this.indicator?.remove();
+    this.indicator = null;
+    this.removeDropdown();
+  }
+
+  /** claude.ai re-renders the top bar per conversation; re-inject the indicator when it does. */
+  private watchToolbar() {
+    let scheduled = false;
+    new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      setTimeout(() => {
+        scheduled = false;
+        if (this.tangentsCache.length) this.renderIndicator();
+      }, 250);
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // --- inline anchors (non-destructive, via CSS Custom Highlight API) ---
@@ -277,7 +380,12 @@ class TangentApp {
   private async decorateAnchors() {
     const conv = convUuidFromPath();
     if (!conv || !('highlights' in CSS)) return;
-    const tangents = await getTangents(conv);
+    let tangents: TangentRecord[];
+    try {
+      tangents = await getTangents(conv);
+    } catch (e) {
+      return this.onStorageError(e);
+    }
     this.ensureHighlightStyle();
     const ranges: Range[] = [];
     for (const t of tangents) {
