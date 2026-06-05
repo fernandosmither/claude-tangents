@@ -74,8 +74,9 @@ class TangentApp {
         if (++tries < 18) setTimeout(tick, 60);
       };
       tick();
-    } catch {
-      /* selector drift etc. — fail quietly, never break the page */
+    } catch (e) {
+      // Don't break the page on selector drift, but don't hide it either.
+      console.warn('[Tangent] selection handler failed', e);
     }
   }
 

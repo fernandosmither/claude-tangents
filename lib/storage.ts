@@ -25,14 +25,21 @@ function local(): LocalArea {
   return area;
 }
 
+/** True for the transient error thrown by an old content script after the extension reloads. */
+function isContextInvalidated(e: unknown): boolean {
+  return /context invalidated/i.test(String(e));
+}
+
 async function readAll(): Promise<Store> {
   try {
     const got = await local().get(KEY);
     return (got[KEY] as Store) || {};
-  } catch {
-    // Storage unavailable, or the extension context was invalidated (e.g. the extension
-    // was just reloaded while this old content script is still alive). Degrade quietly.
-    return {};
+  } catch (e) {
+    // Suppress ONLY the expected "Extension context invalidated" (fires when the extension
+    // is reloaded while this old content script is still alive). Surface everything else —
+    // hiding real storage failures is how the chrome.storage-undefined bug stayed invisible.
+    if (isContextInvalidated(e)) return {};
+    throw e;
   }
 }
 
@@ -40,9 +47,8 @@ async function writeAll(store: Store): Promise<void> {
   try {
     await local().set({ [KEY]: store });
   } catch (e) {
-    // Swallow the transient "Extension context invalidated" (extension reload); re-throw
-    // genuine failures so the caller can surface them.
-    if (!/context invalidated/i.test(String(e))) throw e;
+    // Swallow only the transient "Extension context invalidated"; re-throw genuine failures.
+    if (!isContextInvalidated(e)) throw e;
   }
 }
 
