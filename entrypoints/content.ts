@@ -362,7 +362,7 @@ class TangentApp {
     this.removeDropdown();
   }
 
-  /** claude.ai re-renders the top bar + sidebar; re-apply our injections when it does. */
+  /** claude.ai re-renders the top bar per conversation; re-inject the indicator when it does. */
   private watchToolbar() {
     let scheduled = false;
     new MutationObserver(() => {
@@ -371,25 +371,8 @@ class TangentApp {
       setTimeout(() => {
         scheduled = false;
         if (this.tangentsCache.length) this.renderIndicator();
-        this.hideSidebarTangents();
       }, 250);
     }).observe(document.body, { childList: true, subtree: true });
-  }
-
-  /**
-   * Hide tangent rows from claude.ai's sidebar Recents. claude.ai has no API to keep a
-   * conversation out of Recents (project membership doesn't do it), so we hide the rows
-   * client-side. Tangents stay reachable via the top-bar indicator and the "↳ Tangents"
-   * project. Identified by our "↳" title prefix.
-   */
-  private hideSidebarTangents() {
-    const nav = document.querySelector('nav');
-    if (!nav) return;
-    for (const a of nav.querySelectorAll<HTMLAnchorElement>('a[href*="/chat/"]')) {
-      if (!(a.textContent || '').trim().startsWith('↳')) continue;
-      const row = (a.closest('li') as HTMLElement) || a;
-      row.style.display = 'none';
-    }
   }
 
   // --- inline anchors (non-destructive, via CSS Custom Highlight API) ---
