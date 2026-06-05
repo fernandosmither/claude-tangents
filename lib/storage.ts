@@ -1,17 +1,37 @@
-import { browser } from 'wxt/browser';
 import type { TangentRecord } from './types';
 
 const KEY = 'tangents.byConversation';
 
 type Store = Record<string, TangentRecord[]>;
 
+interface LocalArea {
+  get(keys: string): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+}
+interface OnChanged {
+  addListener(cb: (changes: Record<string, unknown>, area: string) => void): void;
+  removeListener(cb: (changes: Record<string, unknown>, area: string) => void): void;
+}
+
+// Resolve the extension storage at call time, preferring `chrome.storage` — Chrome's
+// `globalThis.browser` alias (which WXT's `browser` helper may select) can be incomplete
+// and lack `.storage`, which surfaced as "Cannot read properties of undefined (reading 'get')".
+function g(): { chrome?: { storage?: { local?: LocalArea; onChanged?: OnChanged } }; browser?: { storage?: { local?: LocalArea; onChanged?: OnChanged } } } {
+  return globalThis as never;
+}
+function local(): LocalArea {
+  const area = g().chrome?.storage?.local ?? g().browser?.storage?.local;
+  if (!area) throw new Error('Tangent: extension storage is unavailable on this page.');
+  return area;
+}
+
 async function readAll(): Promise<Store> {
-  const got = await browser.storage.local.get(KEY);
+  const got = await local().get(KEY);
   return (got[KEY] as Store) || {};
 }
 
 async function writeAll(store: Store): Promise<void> {
-  await browser.storage.local.set({ [KEY]: store });
+  await local().set({ [KEY]: store });
 }
 
 export async function getTangents(mainConvUuid: string): Promise<TangentRecord[]> {
@@ -47,10 +67,11 @@ export async function updateTangent(
 
 /** Subscribe to changes to the tangent store (e.g. to refresh anchors/list across frames). */
 export function onTangentsChanged(cb: () => void): () => void {
+  const onChanged = g().chrome?.storage?.onChanged ?? g().browser?.storage?.onChanged;
+  if (!onChanged) return () => {};
   const handler = (changes: Record<string, unknown>, area: string) => {
     if (area === 'local' && KEY in changes) cb();
   };
-  browser.storage.onChanged.addListener(handler as Parameters<typeof browser.storage.onChanged.addListener>[0]);
-  return () =>
-    browser.storage.onChanged.removeListener(handler as Parameters<typeof browser.storage.onChanged.addListener>[0]);
+  onChanged.addListener(handler);
+  return () => onChanged.removeListener(handler);
 }
