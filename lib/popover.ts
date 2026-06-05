@@ -69,9 +69,9 @@ textarea:focus { border-color: #d97757; }
 }
 .btn:disabled { opacity: .5; cursor: default; }
 .body { flex: 1; min-height: 0; position: relative; background: var(--bg,#fff); }
-.body iframe { width: 100%; height: 100%; border: 0; display: block; }
+.body iframe { width: 100%; height: 100%; border: 0; display: block; transition: opacity .15s ease; }
 .status { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-  flex-direction: column; gap: 10px; font-size: 13px; opacity: .8; }
+  flex-direction: column; gap: 10px; font-size: 13px; opacity: .9; background: var(--bg,#fff); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background:#d97757; animation: p 1s infinite; }
 @keyframes p { 0%,100%{opacity:.3} 50%{opacity:1} }
 .resize { position:absolute; right:2px; bottom:2px; width:14px; height:14px; cursor:nwse-resize;
@@ -95,6 +95,8 @@ export class TangentPopover {
   private body!: HTMLDivElement;
   private iframe: HTMLIFrameElement | null = null;
   private stripObserver: MutationObserver | null = null;
+  private overlay: HTMLDivElement | null = null;
+  private revealed = false;
   private closed = false;
 
   constructor(
@@ -198,12 +200,26 @@ export class TangentPopover {
   }
 
   private mountIframe(convUuid: string) {
-    this.showStatus('Loading…');
+    this.revealed = false;
     const iframe = document.createElement('iframe');
+    iframe.style.opacity = '0'; // keep hidden until the seed message is stripped (no flash)
     iframe.src = `https://claude.ai/chat/${convUuid}`;
     iframe.addEventListener('load', () => this.onIframeLoad(iframe));
     this.iframe = iframe;
-    this.body.replaceChildren(iframe);
+    const overlay = document.createElement('div');
+    overlay.className = 'status';
+    overlay.innerHTML = `<div class="dot"></div><div>Loading the tangent…</div>`;
+    this.overlay = overlay;
+    this.body.replaceChildren(iframe, overlay);
+    setTimeout(() => this.reveal(), 4000); // safety: reveal even if the seed marker never appears
+  }
+
+  private reveal() {
+    if (this.revealed || this.closed) return;
+    this.revealed = true;
+    if (this.iframe) this.iframe.style.opacity = '1';
+    this.overlay?.remove();
+    this.overlay = null;
   }
 
   private onIframeLoad(iframe: HTMLIFrameElement) {
@@ -233,11 +249,12 @@ export class TangentPopover {
       st.textContent = STRIP_CSS;
       doc.head.appendChild(st);
     }
-    // mark the seed (first user message bubble) so STRIP_CSS hides it
+    // mark the seed (first user message bubble) so STRIP_CSS hides it, then reveal
     const firstUser = doc.querySelector('[data-testid="user-message"]');
     if (firstUser) {
       const bubble = (firstUser.closest('[data-user-message-bubble]') as HTMLElement) || (firstUser as HTMLElement);
       if (bubble.getAttribute('data-tangent-seed') !== '1') bubble.setAttribute('data-tangent-seed', '1');
+      this.reveal();
     }
   }
 
