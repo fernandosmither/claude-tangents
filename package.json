@@ -13,10 +13,12 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "icons": "node scripts/gen-icons.mjs",
     "test": "vitest run",
     "postinstall": "wxt prepare"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
     "jsdom": "29.1.1",
     "typescript": "^5.9.3",
     "vitest": "4.1.8",
