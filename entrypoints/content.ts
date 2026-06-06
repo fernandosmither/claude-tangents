@@ -499,21 +499,53 @@ class TangentApp {
       del.style.opacity = '.55';
       del.style.background = 'transparent';
     };
-    del.onclick = async () => {
-      try {
-        // a tangent is stored under the conversation it was created from (its parent, for a
-        // sub-tangent) — delete it there, not under the page's conversation.
-        await removeTangent(t.mainConvUuid, t.tangentId);
-      } catch (e) {
-        return this.onStorageError(e);
-      }
-      closePopoverFor(t.tangentConvUuid); // if a window for it is open, close it too
-      this.removeDropdown();
-      this.refreshPill();
-      this.decorateAnchors();
-    };
+    del.onclick = () => this.requestDelete(t, row);
     row.append(open, del);
     return row;
+  }
+
+  /** Trash click. Deleting a tangent cascades to its sub-tangents; ask first when there are any. */
+  private requestDelete(t: TangentNode, row: HTMLElement) {
+    const subs = countTree(t.children);
+    if (subs === 0) return void this.doDelete(t); // a leaf: delete straight away
+    row.replaceChildren();
+    row.style.background = 'rgba(192,57,43,.15)';
+    const msg = document.createElement('span');
+    msg.style.cssText = 'flex:1;font-size:12px;line-height:1.3;padding-right:6px;';
+    msg.textContent = `Delete this tangent and its ${subs} sub-tangent${subs > 1 ? 's' : ''}?`;
+    const yes = document.createElement('button');
+    yes.textContent = 'Delete all';
+    yes.style.cssText =
+      'border:0;background:#c0392b;color:#fff;cursor:pointer;font:600 12px/1 inherit;padding:6px 9px;border-radius:7px;';
+    const no = document.createElement('button');
+    no.textContent = 'Cancel';
+    no.style.cssText =
+      'border:0;background:rgba(255,255,255,.14);color:inherit;cursor:pointer;font:600 12px/1 inherit;padding:6px 9px;border-radius:7px;';
+    yes.onclick = () => this.doDelete(t);
+    no.onclick = () => {
+      this.removeDropdown();
+      if (this.indicator) this.toggleDropdown(this.indicator); // rebuild the list as it was
+    };
+    row.append(msg, yes, no);
+  }
+
+  private async doDelete(t: TangentNode) {
+    try {
+      await this.cascadeDelete(t);
+    } catch (e) {
+      return this.onStorageError(e);
+    }
+    this.removeDropdown();
+    this.refreshPill();
+    this.decorateAnchors();
+  }
+
+  /** Remove a tangent and all of its sub-tangents (depth-first), closing any open windows. Each
+   *  record is stored under the conversation it was created from, so delete it there. */
+  private async cascadeDelete(node: TangentNode) {
+    for (const child of node.children) await this.cascadeDelete(child);
+    closePopoverFor(node.tangentConvUuid);
+    await removeTangent(node.mainConvUuid, node.tangentId);
   }
 
   private onDocClick = (e: MouseEvent) => {
