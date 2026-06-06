@@ -52,9 +52,9 @@ const CSS = `
 }
 .iconbtn:hover { background: rgba(128,128,128,.18); opacity: 1; }
 .quote {
-  margin: 10px 12px 0; padding: 8px 10px; font-size: 13px;
+  margin: 10px 12px 8px; padding: 8px 10px; font-size: 13px;
   border-left: 3px solid #d97757; background: rgba(217,119,87,.08);
-  border-radius: 0 6px 6px 0; max-height: 90px; overflow: auto; white-space: pre-wrap;
+  border-radius: 8px; max-height: 90px; overflow: auto; white-space: pre-wrap;
 }
 .compose { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 textarea {
