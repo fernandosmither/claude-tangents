@@ -13,10 +13,13 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "test": "vitest run",
     "postinstall": "wxt prepare"
   },
   "devDependencies": {
+    "jsdom": "29.1.1",
     "typescript": "^5.9.3",
+    "vitest": "4.1.8",
     "wxt": "^0.20.26"
   }
 }
