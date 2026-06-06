@@ -3,7 +3,7 @@
   "description": "Fork side-conversations from any point in a Claude answer, without muddying your main chat.",
   "license": "MIT",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "wxt",
