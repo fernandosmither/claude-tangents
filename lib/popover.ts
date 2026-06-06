@@ -24,7 +24,7 @@ export interface PopoverInit {
 const CSS = `
 :host { all: initial; }
 .card {
-  position: fixed; z-index: 2147483600;
+  position: fixed; z-index: 2147000000;
   width: 460px; max-width: calc(100vw - 24px);
   height: 560px; max-height: calc(100vh - 24px);
   display: flex; flex-direction: column;
@@ -150,8 +150,9 @@ export class TangentPopover {
   /** A z-index above every other tangent popover, counted on the shared (top-level) window so
    *  popovers from different frames stack correctly against each other. */
   private bumpZ(): number {
+    // kept below the dropdown/banner layer and far under the 32-bit z-index ceiling (no overflow)
     const w = this.ownerWin() as unknown as { __tangentZ?: number };
-    w.__tangentZ = Math.max(w.__tangentZ || 0, 2147483600) + 1;
+    w.__tangentZ = Math.min(2147400000, Math.max(w.__tangentZ || 0, 2147000000) + 1);
     return w.__tangentZ;
   }
 
@@ -200,6 +201,8 @@ export class TangentPopover {
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.textContent = 'Ask';
+    btn.disabled = true; // enabled once there's a question (styled via .btn:disabled)
+    ta.addEventListener('input', () => (btn.disabled = !ta.value.trim()));
     const err = document.createElement('div');
     err.className = 'err';
     const submit = async () => {
@@ -318,6 +321,7 @@ export class TangentPopover {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.endGesture?.(); // tear down any in-progress drag/resize listeners
     this.stripObserver?.disconnect();
     this.removeShield();
     this.host.remove();
@@ -355,6 +359,7 @@ export class TangentPopover {
       win.removeEventListener('mousemove', move);
       win.removeEventListener('mouseup', up);
       this.removeShield();
+      this.endGesture = null;
     };
     handle.addEventListener('mousedown', (e) => {
       if ((e.target as HTMLElement).closest('.iconbtn')) return;
@@ -370,6 +375,7 @@ export class TangentPopover {
       const win = this.ownerWin();
       win.addEventListener('mousemove', move);
       win.addEventListener('mouseup', up);
+      this.endGesture = up; // so close() mid-drag tears these down
     });
   }
 
@@ -387,6 +393,7 @@ export class TangentPopover {
       win.removeEventListener('mousemove', move);
       win.removeEventListener('mouseup', up);
       this.removeShield();
+      this.endGesture = null;
     };
     handle.addEventListener('mousedown', (e) => {
       sx = e.clientX;
@@ -399,12 +406,15 @@ export class TangentPopover {
       const win = this.ownerWin();
       win.addEventListener('mousemove', move);
       win.addEventListener('mouseup', up);
+      this.endGesture = up;
     });
   }
 
   /** A transparent, full-window cover placed just under the card while dragging/resizing, so the
    *  pointer keeps reporting to the top window even when it passes over a (tangent) iframe. */
   private shield: HTMLElement | null = null;
+  /** Teardown for an in-progress drag/resize, so closing mid-gesture doesn't leak window listeners. */
+  private endGesture: (() => void) | null = null;
   private addShield() {
     const doc = this.host.ownerDocument;
     if (!doc) return;

@@ -1,22 +1,32 @@
 import type { TangentRecord } from './types';
 
-const KEY = 'tangents.byConversation';
+// One storage key PER conversation (`tangents.v2.<convUuid>`) rather than a single blob holding
+// every conversation. The content script runs in all frames, so the top page and a tangent iframe
+// can write concurrently; with separate keys, writes to different conversations can't clobber each
+// other. A per-frame write mutex serializes read-modify-write within a frame.
+const PREFIX = 'tangents.v2.';
+const LEGACY_KEY = 'tangents.byConversation'; // old single-blob format (Record<conv, list>)
 
-type Store = Record<string, TangentRecord[]>;
+type List = TangentRecord[];
+type Bag = Record<string, unknown>;
 
 interface LocalArea {
-  get(keys: string): Promise<Record<string, unknown>>;
-  set(items: Record<string, unknown>): Promise<void>;
+  get(keys: string | string[] | null): Promise<Bag>;
+  set(items: Bag): Promise<void>;
+  remove(keys: string | string[]): Promise<void>;
 }
 interface OnChanged {
-  addListener(cb: (changes: Record<string, unknown>, area: string) => void): void;
-  removeListener(cb: (changes: Record<string, unknown>, area: string) => void): void;
+  addListener(cb: (changes: Bag, area: string) => void): void;
+  removeListener(cb: (changes: Bag, area: string) => void): void;
 }
 
 // Resolve the extension storage at call time, preferring `chrome.storage` — Chrome's
 // `globalThis.browser` alias (which WXT's `browser` helper may select) can be incomplete
 // and lack `.storage`, which surfaced as "Cannot read properties of undefined (reading 'get')".
-function g(): { chrome?: { storage?: { local?: LocalArea; onChanged?: OnChanged } }; browser?: { storage?: { local?: LocalArea; onChanged?: OnChanged } } } {
+function g(): {
+  chrome?: { storage?: { local?: LocalArea; onChanged?: OnChanged } };
+  browser?: { storage?: { local?: LocalArea; onChanged?: OnChanged } };
+} {
   return globalThis as never;
 }
 function local(): LocalArea {
@@ -24,6 +34,8 @@ function local(): LocalArea {
   if (!area) throw new Error('Tangent: extension storage is unavailable on this page.');
   return area;
 }
+
+const keyFor = (conv: string) => PREFIX + conv;
 
 /**
  * True for the error an old content script throws after the extension is reloaded/updated.
@@ -34,54 +46,82 @@ export function isContextInvalidated(e: unknown): boolean {
   return /context invalidated/i.test(String(e));
 }
 
-// Storage operations throw on failure — callers decide how to surface it. (Hiding errors here
-// is exactly how the chrome.storage-undefined bug stayed invisible.)
-async function readAll(): Promise<Store> {
-  const got = await local().get(KEY);
-  return (got[KEY] as Store) || {};
+// --- one-time migration from the single-blob format to per-conversation keys ---
+let migrated: Promise<void> | null = null;
+function ensureMigrated(): Promise<void> {
+  if (!migrated) migrated = migrate().catch(() => {}); // best-effort; never block reads forever
+  return migrated;
+}
+async function migrate(): Promise<void> {
+  const got = await local().get(LEGACY_KEY);
+  const old = got[LEGACY_KEY] as Record<string, List> | undefined;
+  if (!old) return;
+  const items: Bag = {};
+  for (const [conv, list] of Object.entries(old)) if (list?.length) items[keyFor(conv)] = list;
+  if (Object.keys(items).length) await local().set(items);
+  await local().remove(LEGACY_KEY);
 }
 
-async function writeAll(store: Store): Promise<void> {
-  await local().set({ [KEY]: store });
+// --- per-frame write serialization (prevents intra-frame read-modify-write interleave) ---
+let chain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = chain.then(fn, fn);
+  chain = run.catch(() => {});
+  return run;
 }
 
-export async function getTangents(mainConvUuid: string): Promise<TangentRecord[]> {
-  const all = await readAll();
-  return all[mainConvUuid] || [];
+export async function getTangents(mainConvUuid: string): Promise<List> {
+  await ensureMigrated();
+  const k = keyFor(mainConvUuid);
+  const got = await local().get(k);
+  return (got[k] as List) || [];
 }
 
-export async function addTangent(rec: TangentRecord): Promise<void> {
-  const all = await readAll();
-  const list = all[rec.mainConvUuid] || [];
-  list.push(rec);
-  all[rec.mainConvUuid] = list;
-  await writeAll(all);
+export function addTangent(rec: TangentRecord): Promise<void> {
+  return serialize(async () => {
+    await ensureMigrated();
+    const k = keyFor(rec.mainConvUuid);
+    const got = await local().get(k);
+    const list = ((got[k] as List) || []).slice();
+    list.push(rec);
+    await local().set({ [k]: list });
+  });
 }
 
-export async function removeTangent(mainConvUuid: string, tangentId: string): Promise<void> {
-  const all = await readAll();
-  all[mainConvUuid] = (all[mainConvUuid] || []).filter((t) => t.tangentId !== tangentId);
-  await writeAll(all);
+export function removeTangent(mainConvUuid: string, tangentId: string): Promise<void> {
+  return serialize(async () => {
+    await ensureMigrated();
+    const k = keyFor(mainConvUuid);
+    const got = await local().get(k);
+    const list = ((got[k] as List) || []).filter((t) => t.tangentId !== tangentId);
+    if (list.length) await local().set({ [k]: list });
+    else await local().remove(k);
+  });
 }
 
-export async function updateTangent(
+export function updateTangent(
   mainConvUuid: string,
   tangentId: string,
   patch: Partial<TangentRecord>,
 ): Promise<void> {
-  const all = await readAll();
-  all[mainConvUuid] = (all[mainConvUuid] || []).map((t) =>
-    t.tangentId === tangentId ? { ...t, ...patch } : t,
-  );
-  await writeAll(all);
+  return serialize(async () => {
+    await ensureMigrated();
+    const k = keyFor(mainConvUuid);
+    const got = await local().get(k);
+    const list = ((got[k] as List) || []).map((t) =>
+      t.tangentId === tangentId ? { ...t, ...patch } : t,
+    );
+    await local().set({ [k]: list });
+  });
 }
 
-/** Subscribe to changes to the tangent store (e.g. to refresh anchors/list across frames). */
+/** Subscribe to changes to any tangent key (e.g. to refresh anchors/list across frames). */
 export function onTangentsChanged(cb: () => void): () => void {
   const onChanged = g().chrome?.storage?.onChanged ?? g().browser?.storage?.onChanged;
   if (!onChanged) return () => {};
-  const handler = (changes: Record<string, unknown>, area: string) => {
-    if (area === 'local' && KEY in changes) cb();
+  const handler = (changes: Bag, area: string) => {
+    if (area === 'local' && Object.keys(changes).some((k) => k.startsWith(PREFIX) || k === LEGACY_KEY))
+      cb();
   };
   onChanged.addListener(handler);
   return () => onChanged.removeListener(handler);

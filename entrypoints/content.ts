@@ -69,9 +69,13 @@ function inSubframe(): boolean {
     return true;
   }
 }
+// Popover stacking range, kept below the dropdown/banner layer (2147483640+) and far under the
+// 32-bit CSS z-index ceiling (2147483647) so the monotonic counter can't overflow it.
+const Z_BASE = 2147000000;
+const Z_CAP = 2147400000;
 function bumpTopZ(): number {
   const w = topWin() as unknown as { __tangentZ?: number };
-  w.__tangentZ = Math.max(w.__tangentZ || 0, 2147483600) + 1;
+  w.__tangentZ = Math.min(Z_CAP, Math.max(w.__tangentZ || 0, Z_BASE) + 1);
   return w.__tangentZ;
 }
 /** An open popover for `convUuid`, if any — found in the shared top-level document, so it works
@@ -145,6 +149,8 @@ class TangentApp {
    *  re-apply them without another storage round-trip (and against the right conversation). */
   private anchorTangents: TangentRecord[] = [];
   private anchorConv: string | null = null;
+  private unsub: (() => void) | null = null;
+  private toolbarObserver: MutationObserver | null = null;
 
   /** A storage op failed. If the extension was reloaded under this page, tell the user to
    *  reload it (the only fix); otherwise surface the real error. */
@@ -189,11 +195,22 @@ class TangentApp {
     this.watchNavigation();
     this.watchToolbar();
     this.onNavigate();
-    onTangentsChanged(() => {
+    this.unsub = onTangentsChanged(() => {
       this.refreshPill(); // top page: indicator + list (no-op inside an iframe)
       this.decorateAnchors(); // each frame re-marks its own conversation's highlights
     });
+    // a tangent iframe is torn down when its popover closes; release this frame's subscriptions
+    window.addEventListener('pagehide', this.destroy, { once: true });
   }
+
+  /** Release frame-level subscriptions/observers so they don't leak for the page's lifetime. */
+  private destroy = () => {
+    this.unsub?.();
+    this.unsub = null;
+    this.toolbarObserver?.disconnect();
+    document.removeEventListener('click', this.onAnchorClick, true);
+    document.removeEventListener('mousemove', this.onAnchorHover);
+  };
 
   private onMessage(e: MessageEvent) {
     if (e.origin !== location.origin) return;
@@ -530,8 +547,9 @@ class TangentApp {
   }
 
   private async doDelete(t: TangentNode) {
+    const org = await getChatOrgUuid().catch(() => null);
     try {
-      await this.cascadeDelete(t);
+      await this.cascadeDelete(t, org);
     } catch (e) {
       return this.onStorageError(e);
     }
@@ -540,12 +558,26 @@ class TangentApp {
     this.decorateAnchors();
   }
 
-  /** Remove a tangent and all of its sub-tangents (depth-first), closing any open windows. Each
-   *  record is stored under the conversation it was created from, so delete it there. */
-  private async cascadeDelete(node: TangentNode) {
-    for (const child of node.children) await this.cascadeDelete(child);
+  /**
+   * Remove a tangent and all of its sub-tangents (depth-first), closing any open windows and
+   * deleting each tangent's OWN claude.ai conversation (`tangentConvUuid`) — never the parent it
+   * was forked from (`mainConvUuid`, which for a top-level tangent is the user's real chat). The
+   * children are re-derived from LIVE storage, not the dropdown snapshot, so a sub-tangent added
+   * after the list was built is still caught (otherwise its record would orphan forever).
+   */
+  private async cascadeDelete(node: TangentRecord, org: string | null, seen = new Set<string>()) {
+    if (seen.has(node.tangentConvUuid)) return; // guard against cycles
+    seen.add(node.tangentConvUuid);
+    let children: TangentRecord[] = [];
+    try {
+      children = await getTangents(node.tangentConvUuid);
+    } catch {
+      /* can't read children — still delete this node below */
+    }
+    for (const child of children) await this.cascadeDelete(child, org, seen);
     closePopoverFor(node.tangentConvUuid);
     await removeTangent(node.mainConvUuid, node.tangentId);
+    if (org) deleteConversation(node.tangentConvUuid, org).catch(() => {}); // delete the side-chat itself
   }
 
   private onDocClick = (e: MouseEvent) => {
@@ -568,7 +600,7 @@ class TangentApp {
   /** claude.ai re-renders the top bar per conversation; re-inject the indicator when it does. */
   private watchToolbar() {
     let scheduled = false;
-    new MutationObserver(() => {
+    this.toolbarObserver = new MutationObserver(() => {
       if (scheduled) return;
       scheduled = true;
       setTimeout(() => {
@@ -576,7 +608,8 @@ class TangentApp {
         if (this.tangentsCache.length) this.renderIndicator();
         this.applyHighlights(); // claude.ai re-rendered; redraw underlines (from cache, no I/O)
       }, 250);
-    }).observe(document.body, { childList: true, subtree: true });
+    });
+    this.toolbarObserver.observe(document.body, { childList: true, subtree: true });
   }
 
   // --- inline anchors (non-destructive, via CSS Custom Highlight API) ---
@@ -605,13 +638,18 @@ class TangentApp {
     const ranges: Range[] = [];
     if (this.anchorTangents.length) {
       const roots = buildRootMaps();
+      const consumed = new Set<string>(); // occurrences already claimed by an earlier tangent
       for (const t of this.anchorTangents) {
-        const r = rangeFromRoots(roots, t.highlightText);
-        if (r) {
-          ranges.push(r);
-          this.anchors.push({ rec: t, range: r });
+        const range = locateHighlight(roots, t, consumed);
+        if (range) {
+          ranges.push(range);
+          this.anchors.push({ rec: t, range });
         }
       }
+    }
+    if (!this.anchors.length && this.cursorOn) {
+      this.cursorOn = false;
+      document.documentElement.style.cursor = '';
     }
     CSS.highlights.set('tangent', new Highlight(...ranges));
   }
@@ -619,6 +657,7 @@ class TangentApp {
   /** Which tangent's highlight (if any) sits under a viewport point. */
   private anchorAt(x: number, y: number): TangentRecord | null {
     for (const a of this.anchors) {
+      if (!a.range.startContainer.isConnected) continue; // stale range after a claude.ai re-render
       for (const r of a.range.getClientRects()) {
         if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return a.rec;
       }
@@ -627,7 +666,11 @@ class TangentApp {
   }
 
   private onAnchorClick = (e: MouseEvent) => {
+    if (!this.anchors.length) return;
     if (!window.getSelection()?.isCollapsed) return; // mid drag-select, not a plain click
+    // only ever intercept clicks inside an assistant answer, so we never shadow claude.ai's own
+    // UI (buttons, links, citations) elsewhere on the page
+    if (!(e.target as HTMLElement | null)?.closest?.(SEL.assistantMessage)) return;
     const rec = this.anchorAt(e.clientX, e.clientY);
     if (!rec) return;
     e.preventDefault();
@@ -636,6 +679,13 @@ class TangentApp {
   };
 
   private onAnchorHover = (e: MouseEvent) => {
+    if (!this.anchors.length) {
+      if (this.cursorOn) {
+        this.cursorOn = false;
+        document.documentElement.style.cursor = '';
+      }
+      return;
+    }
     if (this.hoverScheduled) return;
     this.hoverScheduled = true;
     const { clientX: x, clientY: y } = e;
@@ -733,20 +783,51 @@ function buildRootMaps(): RootMap[] {
   return out;
 }
 
-/** A Range spanning the first occurrence of `text` across the prebuilt root maps. */
-function rangeFromRoots(roots: RootMap[], text: string): Range | null {
-  const needle = text.replace(/\s+/g, ' ').trim();
+const normWs = (s: string) => s.replace(/\s+/g, ' ').trim();
+const commonSuffixLen = (a: string, b: string) => {
+  let n = 0;
+  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
+  return n;
+};
+const commonPrefixLen = (a: string, b: string) => {
+  let n = 0;
+  while (n < a.length && n < b.length && a[n] === b[n]) n++;
+  return n;
+};
+
+/**
+ * Locate a tangent's highlight across the prebuilt root maps. When the same text occurs more than
+ * once, pick the occurrence whose surrounding text best matches the stored prefix/suffix, and skip
+ * occurrences already claimed by an earlier tangent this pass — so repeated/identical phrases stay
+ * mapped to the correct tangent instead of all collapsing onto the first hit.
+ */
+function locateHighlight(roots: RootMap[], t: TangentRecord, consumed: Set<string>): Range | null {
+  const needle = normWs(t.highlightText);
   if (needle.length < 3) return null;
-  for (const { flat, map } of roots) {
-    const idx = flat.indexOf(needle);
-    if (idx < 0) continue;
-    const start = map[idx];
-    const end = map[idx + needle.length - 1];
-    if (!start || !end) continue;
-    const range = document.createRange();
-    range.setStart(start.node, start.offset);
-    range.setEnd(end.node, end.offset + 1);
-    return range;
+  const prefix = normWs(t.prefix || '');
+  const suffix = normWs(t.suffix || '');
+  let best: { ri: number; idx: number; score: number } | null = null;
+  for (let ri = 0; ri < roots.length; ri++) {
+    const flat = roots[ri].flat;
+    let from = 0;
+    let idx: number;
+    while ((idx = flat.indexOf(needle, from)) >= 0) {
+      from = idx + 1;
+      if (consumed.has(ri + ':' + idx)) continue;
+      const before = flat.slice(Math.max(0, idx - prefix.length), idx);
+      const after = flat.slice(idx + needle.length, idx + needle.length + suffix.length);
+      const score = commonSuffixLen(before, prefix) + commonPrefixLen(after, suffix);
+      if (!best || score > best.score) best = { ri, idx, score };
+    }
   }
-  return null;
+  if (!best) return null;
+  consumed.add(best.ri + ':' + best.idx);
+  const { map } = roots[best.ri];
+  const start = map[best.idx];
+  const end = map[best.idx + needle.length - 1];
+  if (!start || !end) return null;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset + 1);
+  return range;
 }

@@ -22,7 +22,7 @@ export function closestAssistantMessage(node: Node | null): HTMLElement | null {
 }
 
 /** Info about the current text selection, if it sits inside a Claude (assistant) answer. */
-export function getSelectionInfo(min = 2): SelectionInfo | null {
+export function getSelectionInfo(min = 3): SelectionInfo | null {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
   const highlight = sel.toString().trim();

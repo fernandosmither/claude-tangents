@@ -67,5 +67,4 @@ export interface TangentRecord {
   tangentConvUuid: string; // the separate claude.ai conversation backing this tangent
   title: string;
   createdAt: number;
-  parentTangentId?: string; // set for nested tangents
 }
