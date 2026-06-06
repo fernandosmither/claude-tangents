@@ -56,8 +56,15 @@ async function migrate(): Promise<void> {
   const got = await local().get(LEGACY_KEY);
   const old = got[LEGACY_KEY] as Record<string, List> | undefined;
   if (!old) return;
+  // Only seed conversations that don't already have a per-conversation key, so a migration or
+  // write that already ran (here or in another frame) can't be clobbered by stale legacy data.
+  const keys = Object.keys(old).filter((c) => old[c]?.length).map(keyFor);
+  const existing = keys.length ? await local().get(keys) : {};
   const items: Bag = {};
-  for (const [conv, list] of Object.entries(old)) if (list?.length) items[keyFor(conv)] = list;
+  for (const [conv, list] of Object.entries(old)) {
+    const k = keyFor(conv);
+    if (list?.length && !(k in existing)) items[k] = list;
+  }
   if (Object.keys(items).length) await local().set(items);
   await local().remove(LEGACY_KEY);
 }

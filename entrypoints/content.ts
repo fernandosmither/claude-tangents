@@ -10,6 +10,7 @@ import {
   sendCompletion,
 } from '@/lib/claude';
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
+import { buildRootMaps, locateHighlight } from '@/lib/highlight';
 import { SEL, findSelectionToolbar } from '@/lib/selectors';
 import { buildSeed } from '@/lib/seed';
 import {
@@ -200,11 +201,12 @@ class TangentApp {
       this.decorateAnchors(); // each frame re-marks its own conversation's highlights
     });
     // a tangent iframe is torn down when its popover closes; release this frame's subscriptions
-    window.addEventListener('pagehide', this.destroy, { once: true });
+    window.addEventListener('pagehide', this.destroy);
   }
 
   /** Release frame-level subscriptions/observers so they don't leak for the page's lifetime. */
-  private destroy = () => {
+  private destroy = (e?: PageTransitionEvent) => {
+    if (e?.persisted) return; // bfcache: the page may be restored alive, so keep the wiring intact
     this.unsub?.();
     this.unsub = null;
     this.toolbarObserver?.disconnect();
@@ -751,85 +753,4 @@ class TangentApp {
     };
     setTimeout(tick, 500);
   }
-}
-
-/**
- * A whitespace-normalized, flattened view of one assistant message's text, mapping each char in
- * the flat string back to its source text node + offset. This lets a highlight be matched even
- * when it spans multiple text nodes (bold, links, paragraph breaks) or differs only in whitespace.
- */
-interface RootMap {
-  flat: string;
-  map: { node: Text; offset: number }[];
-}
-
-function buildRootMaps(): RootMap[] {
-  const out: RootMap[] = [];
-  for (const root of document.querySelectorAll(SEL.assistantMessage)) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let flat = '';
-    const map: { node: Text; offset: number }[] = [];
-    let node: Node | null;
-    while ((node = walker.nextNode())) {
-      const t = node as Text;
-      const raw = t.textContent || '';
-      for (let i = 0; i < raw.length; i++) {
-        const ws = /\s/.test(raw[i]);
-        if (ws && flat.endsWith(' ')) continue; // collapse runs of whitespace
-        flat += ws ? ' ' : raw[i];
-        map.push({ node: t, offset: i }); // map stays index-aligned with flat
-      }
-    }
-    out.push({ flat, map });
-  }
-  return out;
-}
-
-const normWs = (s: string) => s.replace(/\s+/g, ' ').trim();
-const commonSuffixLen = (a: string, b: string) => {
-  let n = 0;
-  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
-  return n;
-};
-const commonPrefixLen = (a: string, b: string) => {
-  let n = 0;
-  while (n < a.length && n < b.length && a[n] === b[n]) n++;
-  return n;
-};
-
-/**
- * Locate a tangent's highlight across the prebuilt root maps. When the same text occurs more than
- * once, pick the occurrence whose surrounding text best matches the stored prefix/suffix, and skip
- * occurrences already claimed by an earlier tangent this pass — so repeated/identical phrases stay
- * mapped to the correct tangent instead of all collapsing onto the first hit.
- */
-function locateHighlight(roots: RootMap[], t: TangentRecord, consumed: Set<string>): Range | null {
-  const needle = normWs(t.highlightText);
-  if (needle.length < 3) return null;
-  const prefix = normWs(t.prefix || '');
-  const suffix = normWs(t.suffix || '');
-  let best: { ri: number; idx: number; score: number } | null = null;
-  for (let ri = 0; ri < roots.length; ri++) {
-    const flat = roots[ri].flat;
-    let from = 0;
-    let idx: number;
-    while ((idx = flat.indexOf(needle, from)) >= 0) {
-      from = idx + 1;
-      if (consumed.has(ri + ':' + idx)) continue;
-      const before = flat.slice(Math.max(0, idx - prefix.length), idx);
-      const after = flat.slice(idx + needle.length, idx + needle.length + suffix.length);
-      const score = commonSuffixLen(before, prefix) + commonPrefixLen(after, suffix);
-      if (!best || score > best.score) best = { ri, idx, score };
-    }
-  }
-  if (!best) return null;
-  consumed.add(best.ri + ':' + best.idx);
-  const { map } = roots[best.ri];
-  const start = map[best.idx];
-  const end = map[best.idx + needle.length - 1];
-  if (!start || !end) return null;
-  const range = document.createRange();
-  range.setStart(start.node, start.offset);
-  range.setEnd(end.node, end.offset + 1);
-  return range;
 }

@@ -321,7 +321,7 @@ export class TangentPopover {
   close() {
     if (this.closed) return;
     this.closed = true;
-    this.endGesture?.(); // tear down any in-progress drag/resize listeners
+    for (const end of [...this.activeGestures]) end(); // tear down any in-progress drag/resize
     this.stripObserver?.disconnect();
     this.removeShield();
     this.host.remove();
@@ -359,9 +359,10 @@ export class TangentPopover {
       win.removeEventListener('mousemove', move);
       win.removeEventListener('mouseup', up);
       this.removeShield();
-      this.endGesture = null;
+      this.activeGestures.delete(up);
     };
     handle.addEventListener('mousedown', (e) => {
+      if (this.closed) return;
       if ((e.target as HTMLElement).closest('.iconbtn')) return;
       handle.classList.add('grab');
       sx = e.clientX;
@@ -375,7 +376,7 @@ export class TangentPopover {
       const win = this.ownerWin();
       win.addEventListener('mousemove', move);
       win.addEventListener('mouseup', up);
-      this.endGesture = up; // so close() mid-drag tears these down
+      this.activeGestures.add(up); // so close() mid-drag tears these down
     });
   }
 
@@ -393,9 +394,10 @@ export class TangentPopover {
       win.removeEventListener('mousemove', move);
       win.removeEventListener('mouseup', up);
       this.removeShield();
-      this.endGesture = null;
+      this.activeGestures.delete(up);
     };
     handle.addEventListener('mousedown', (e) => {
+      if (this.closed) return;
       sx = e.clientX;
       sy = e.clientY;
       ow = card.offsetWidth;
@@ -406,15 +408,16 @@ export class TangentPopover {
       const win = this.ownerWin();
       win.addEventListener('mousemove', move);
       win.addEventListener('mouseup', up);
-      this.endGesture = up;
+      this.activeGestures.add(up);
     });
   }
 
   /** A transparent, full-window cover placed just under the card while dragging/resizing, so the
    *  pointer keeps reporting to the top window even when it passes over a (tangent) iframe. */
   private shield: HTMLElement | null = null;
-  /** Teardown for an in-progress drag/resize, so closing mid-gesture doesn't leak window listeners. */
-  private endGesture: (() => void) | null = null;
+  /** Teardowns for in-progress drag/resize gestures, so closing mid-gesture doesn't leak window
+   *  listeners (a set, so an overlapping drag+resize can't lose one of them). */
+  private activeGestures = new Set<() => void>();
   private addShield() {
     const doc = this.host.ownerDocument;
     if (!doc) return;
