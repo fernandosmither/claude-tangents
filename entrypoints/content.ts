@@ -19,6 +19,7 @@ import {
   isContextInvalidated,
   onTangentsChanged,
   removeTangent,
+  storageAvailable,
 } from '@/lib/storage';
 import type { TangentRecord } from '@/lib/types';
 
@@ -336,6 +337,13 @@ class TangentApp {
     getPopover: () => TangentPopover,
   ): Promise<string> {
     try {
+      // If this content script was orphaned by an extension reload, chrome.storage is dead — bail
+      // out BEFORE creating a conversation we couldn't save (which would leave a stray chat), and
+      // tell the user to reload the page.
+      if (!storageAvailable()) {
+        this.showReloadBanner();
+        throw new Error('↳ Tangent was updated — reload this page (⌘R) to continue.');
+      }
       const org = await getChatOrgUuid();
       const tree = await getTree(mainConv, org);
       const anchorUuid =

@@ -94,4 +94,18 @@ describe('storage', () => {
     const got = await storage.getTangents('A');
     expect(got.map((t) => t.tangentId)).toEqual(['fresh']); // legacy did not clobber fresh
   });
+
+  it('isContextInvalidated matches both orphaned-content-script error variants', () => {
+    expect(storage.isContextInvalidated(new Error('Extension context invalidated.'))).toBe(true);
+    expect(
+      storage.isContextInvalidated(new Error('Tangent: extension storage is unavailable on this page.')),
+    ).toBe(true);
+    expect(storage.isContextInvalidated(new Error('quota exceeded'))).toBe(false);
+  });
+
+  it('storageAvailable reflects whether chrome.storage is reachable', () => {
+    expect(storage.storageAvailable()).toBe(true); // mock installed in beforeEach
+    delete (globalThis as { chrome?: unknown }).chrome;
+    expect(storage.storageAvailable()).toBe(false);
+  });
 });

@@ -38,12 +38,22 @@ function local(): LocalArea {
 const keyFor = (conv: string) => PREFIX + conv;
 
 /**
- * True for the error an old content script throws after the extension is reloaded/updated.
- * It has a user-visible consequence (the page's script can't read/write storage anymore), so
- * callers should surface a "reload the page" prompt — NOT hide it.
+ * True for the errors an orphaned content script throws after the extension is reloaded/updated
+ * under an open tab. chrome.* loses its binding: chrome.storage either throws "Extension context
+ * invalidated" or goes undefined (then our local() throws "extension storage is unavailable").
+ * Both mean the same thing to the user — reload the page — so callers surface that, NOT hide it.
  */
 export function isContextInvalidated(e: unknown): boolean {
-  return /context invalidated/i.test(String(e));
+  return /context invalidated|extension storage is unavailable|Extension context/i.test(String(e));
+}
+
+/** Whether extension storage is reachable right now (false on an orphaned/invalidated script). */
+export function storageAvailable(): boolean {
+  try {
+    return !!(g().chrome?.storage?.local ?? g().browser?.storage?.local);
+  } catch {
+    return false;
+  }
 }
 
 // --- one-time migration from the single-blob format to per-conversation keys ---
