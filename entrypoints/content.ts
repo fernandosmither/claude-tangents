@@ -12,7 +12,7 @@ import {
 import { findAnchorUuid, getSelectionInfo, type SelectionInfo } from '@/lib/anchor';
 import { buildRootMaps, locateHighlight } from '@/lib/highlight';
 import { SEL, findSelectionToolbar } from '@/lib/selectors';
-import { buildSeed } from '@/lib/seed';
+import { buildSeed, collectMedia } from '@/lib/seed';
 import {
   addTangent,
   getTangents,
@@ -344,10 +344,21 @@ class TangentApp {
       if (!anchorUuid) throw new Error('No Claude answer found to fork from.');
       const model = tree.model || 'claude-sonnet-4-5';
       const seed = buildSeed({ tree, anchorMessageUuid: anchorUuid, highlight: info.highlight, question });
+      // carry the source thread's media into the tangent without re-uploading: re-link uploaded
+      // files by org-scoped file_uuid, re-attach documents with their inline extracted_content
+      const media = collectMedia(tree, anchorUuid);
 
       const title = `↳ ${info.highlight.slice(0, 48)}`;
       const tangentConv = await createConversation(title, org);
-      const res = await sendCompletion({ convUuid: tangentConv, prompt: seed, model, org });
+      const res = await sendCompletion({
+        convUuid: tangentConv,
+        prompt: seed,
+        model,
+        org,
+        files: media.files,
+        attachments: media.attachments,
+        syncSources: media.sync_sources,
+      });
       if (!res.ok) {
         deleteConversation(tangentConv, org).catch(() => {}); // clean up the empty conversation
         throw new Error(`Claude rejected the request (HTTP ${res.status}).`);

@@ -1,6 +1,7 @@
 // Shapes reverse-engineered from claude.ai's internal API (see plan / README).
 
 export interface AttachmentDoc {
+  id?: string;
   file_name: string;
   extracted_content: string;
   file_type?: string;
@@ -8,9 +9,17 @@ export interface AttachmentDoc {
 }
 
 export interface FileRef {
-  file_uuid: string;
+  file_uuid?: string;
+  uuid?: string;
   file_name?: string;
   [k: string]: unknown;
+}
+
+/** Media gathered from a source thread to carry into a tangent (no re-upload). */
+export interface MediaPayload {
+  files: string[]; // org-scoped file_uuids, re-linked by reference
+  attachments: AttachmentDoc[]; // documents re-attached (extracted_content is inline in the tree)
+  sync_sources: unknown[]; // connector refs, passed through as-is
 }
 
 export interface ContentBlock {

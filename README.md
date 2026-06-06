@@ -24,11 +24,14 @@ Tangent reuses claude.ai's own backend and UI rather than reimplementing them:
 
 1. On **↳ Tangent** (injected just under claude.ai's native Reply toolbar), it reads the
    current conversation's message tree and builds a faithful transcript up to the highlighted
-   answer — including any **document attachments' extracted text** — plus the quoted excerpt
-   and your question.
+   answer, plus the quoted excerpt and your question. It also **carries the source thread's
+   media — with no re-upload**: uploaded **images/files** are re-linked by their org-scoped
+   `file_uuid`, **documents** are re-attached with their inline extracted text, and
+   **Claude-generated artifacts/files** are embedded as text (all of this already lives in the
+   conversation tree).
 2. It creates a **new, separate conversation** (`POST …/chat_conversations`) and seeds it
-   with that context via a single minimal `…/completion` call, using the same model as your
-   main chat.
+   with that context via a single `…/completion` call (with the `files`/`attachments` arrays),
+   using the same model as your main chat.
 3. It files that conversation under an auto-created **"↳ Tangents" project**, grouping your
    tangents together. (claude.ai has no API to keep a conversation out of Recents, so they
    also stay in your sidebar, labelled with the `↳` prefix.)

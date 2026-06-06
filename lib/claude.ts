@@ -105,6 +105,12 @@ export interface CompletionOpts {
   parentUuid?: string; // defaults to ROOT (new top-level message)
   org?: string;
   signal?: AbortSignal;
+  // Media carried from the source thread (verified live). `files` re-links org-scoped uploads by
+  // file_uuid; `attachments` re-attaches documents with their inline extracted_content; both avoid
+  // any re-upload. Sent only when non-empty.
+  files?: string[];
+  attachments?: unknown[];
+  syncSources?: unknown[];
 }
 
 /**
@@ -114,7 +120,7 @@ export interface CompletionOpts {
  */
 export async function sendCompletion(opts: CompletionOpts): Promise<Response> {
   const o = opts.org || (await getChatOrgUuid());
-  const body = {
+  const body: Record<string, unknown> = {
     prompt: opts.prompt,
     parent_message_uuid: opts.parentUuid || ROOT_PARENT,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -125,6 +131,9 @@ export async function sendCompletion(opts: CompletionOpts): Promise<Response> {
       assistant_message_uuid: uuidv7(),
     },
   };
+  if (opts.files?.length) body.files = opts.files;
+  if (opts.attachments?.length) body.attachments = opts.attachments;
+  if (opts.syncSources?.length) body.sync_sources = opts.syncSources;
   return api(`/organizations/${o}/chat_conversations/${opts.convUuid}/completion`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
