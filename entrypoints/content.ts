@@ -521,17 +521,19 @@ class TangentApp {
     return row;
   }
 
-  /** Trash click. Deleting a tangent cascades to its sub-tangents; ask first when there are any. */
+  /** Trash click. Always confirm first (delete permanently removes the tangent's conversation);
+   *  a parent's prompt also names how many sub-tangents go with it. */
   private requestDelete(t: TangentNode, row: HTMLElement) {
     const subs = countTree(t.children);
-    if (subs === 0) return void this.doDelete(t); // a leaf: delete straight away
     row.replaceChildren();
     row.style.background = 'rgba(192,57,43,.15)';
     const msg = document.createElement('span');
     msg.style.cssText = 'flex:1;font-size:12px;line-height:1.3;padding-right:6px;';
-    msg.textContent = `Delete this tangent and its ${subs} sub-tangent${subs > 1 ? 's' : ''}?`;
+    msg.textContent = subs
+      ? `Delete this tangent and its ${subs} sub-tangent${subs > 1 ? 's' : ''}?`
+      : 'Delete this tangent?';
     const yes = document.createElement('button');
-    yes.textContent = 'Delete all';
+    yes.textContent = subs ? 'Delete all' : 'Delete';
     yes.style.cssText =
       'border:0;background:#c0392b;color:#fff;cursor:pointer;font:600 12px/1 inherit;padding:6px 9px;border-radius:7px;';
     const no = document.createElement('button');
