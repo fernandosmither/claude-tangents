@@ -119,6 +119,15 @@ function countTree(nodes: TangentNode[]): number {
   return nodes.reduce((n, t) => n + 1 + countTree(t.children), 0);
 }
 
+/** An outline trash-can, matching claude.ai's icon weight (their own is a private icon-font glyph,
+ *  not an embeddable SVG). */
+const TRASH_SVG =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>' +
+  '<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>' +
+  '<line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+
 
 class TangentApp {
   private popovers = new Set<TangentPopover>();
@@ -127,6 +136,15 @@ class TangentApp {
   private tangentsCache: TangentNode[] = [];
   private lastConv: string | null = null;
   private storageBannerShown = false;
+  /** Live ranges for the inline highlights, so a click can be hit-tested back to its tangent
+   *  (the CSS Custom Highlight API paints no element, so there's nothing to attach a handler to). */
+  private anchors: { rec: TangentRecord; range: Range }[] = [];
+  private cursorOn = false;
+  private hoverScheduled = false;
+  /** The tangent list + conversation the highlights were last read for, so a re-render can
+   *  re-apply them without another storage round-trip (and against the right conversation). */
+  private anchorTangents: TangentRecord[] = [];
+  private anchorConv: string | null = null;
 
   /** A storage op failed. If the extension was reloaded under this page, tell the user to
    *  reload it (the only fix); otherwise surface the real error. */
@@ -162,6 +180,9 @@ class TangentApp {
     document.addEventListener('selectionchange', () => {
       if (window.getSelection()?.isCollapsed) this.removeToolbarPill();
     });
+    // click an underlined highlight to reopen its tangent; pointer cursor on hover to hint it
+    document.addEventListener('click', this.onAnchorClick, true);
+    document.addEventListener('mousemove', this.onAnchorHover, { passive: true });
     // sub-tangents created inside a tangent iframe ask the top page to open their window here
     if (!inSubframe()) window.addEventListener('message', (e) => this.onMessage(e));
     // SPA navigation
@@ -181,12 +202,17 @@ class TangentApp {
       kind?: string;
       mainConv?: string;
       info?: { highlight: string; prefix: string; suffix: string };
+      rec?: TangentRecord;
     } | null;
-    if (!d || d.source !== 'claude-tangent' || d.kind !== 'open-compose' || !d.mainConv || !d.info) return;
-    // messageEl isn't needed downstream (createTangent uses highlight/prefix/suffix), and DOM
-    // nodes can't cross the postMessage boundary anyway.
-    const info = { highlight: d.info.highlight, prefix: d.info.prefix, suffix: d.info.suffix } as SelectionInfo;
-    this.openCompose(info, null, d.mainConv);
+    if (!d || d.source !== 'claude-tangent') return;
+    if (d.kind === 'open-compose' && d.mainConv && d.info) {
+      // messageEl isn't needed downstream (createTangent uses highlight/prefix/suffix), and DOM
+      // nodes can't cross the postMessage boundary anyway.
+      const info = { highlight: d.info.highlight, prefix: d.info.prefix, suffix: d.info.suffix } as SelectionInfo;
+      this.openCompose(info, null, d.mainConv);
+    } else if (d.kind === 'reopen' && d.rec) {
+      this.reopen(d.rec); // a sub-tangent highlight was clicked inside an iframe
+    }
   }
 
   // --- selection → a "Tangent" pill directly under claude.ai's native Reply toolbar ---
@@ -422,11 +448,14 @@ class TangentApp {
     const list = document.createElement('div');
     list.setAttribute('data-tangent-dropdown', '');
     const r = anchor.getBoundingClientRect();
+    // Raycast-style translucent "glass" panel: blurred, low-opacity dark fill, rounded, rows inset
     list.style.cssText =
-      `position:fixed;top:${Math.round(r.bottom + 6)}px;right:${Math.round(Math.max(8, window.innerWidth - r.right))}px;` +
-      'z-index:2147483640;min-width:240px;max-width:360px;max-height:60vh;overflow:auto;border-radius:10px;' +
-      'background:#2b2b2b;color:#ececec;border:1px solid rgba(128,128,128,.25);' +
-      'box-shadow:0 12px 32px rgba(0,0,0,.32);font:13px/1.4 ui-sans-serif,system-ui,sans-serif;';
+      `position:fixed;top:${Math.round(r.bottom + 8)}px;right:${Math.round(Math.max(8, window.innerWidth - r.right))}px;` +
+      'z-index:2147483640;min-width:252px;max-width:380px;max-height:62vh;overflow:auto;padding:6px;' +
+      'border-radius:15px;background:rgba(34,34,36,.6);backdrop-filter:blur(22px) saturate(180%);' +
+      '-webkit-backdrop-filter:blur(22px) saturate(180%);color:#ededed;' +
+      'border:1px solid rgba(255,255,255,.1);box-shadow:0 18px 50px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);' +
+      'font:13px/1.4 ui-sans-serif,system-ui,sans-serif;';
     // sub-tangents render indented under the tangent they came from
     const renderNodes = (nodes: TangentNode[], depth: number) => {
       for (const t of nodes) {
@@ -443,8 +472,10 @@ class TangentApp {
   private buildDropdownRow(t: TangentNode, depth: number): HTMLElement {
     const row = document.createElement('div');
     row.style.cssText =
-      `display:flex;gap:8px;align-items:center;padding:8px 10px;padding-left:${10 + depth * 18}px;` +
-      'border-bottom:1px solid rgba(128,128,128,.15);';
+      `display:flex;gap:8px;align-items:center;padding:8px 10px;padding-left:${10 + depth * 16}px;` +
+      'border-radius:9px;transition:background .1s;';
+    row.onmouseenter = () => (row.style.background = 'rgba(255,255,255,.08)');
+    row.onmouseleave = () => (row.style.background = 'transparent');
     const open = document.createElement('button');
     open.textContent = t.title;
     open.title = 'Reopen tangent';
@@ -455,9 +486,19 @@ class TangentApp {
       this.reopen(t);
     };
     const del = document.createElement('button');
-    del.textContent = '🗑';
+    del.innerHTML = TRASH_SVG;
     del.title = 'Delete tangent';
-    del.style.cssText = 'border:0;background:transparent;cursor:pointer;opacity:.6;';
+    del.style.cssText =
+      'display:flex;align-items:center;justify-content:center;border:0;background:transparent;cursor:pointer;' +
+      'opacity:.55;padding:4px;border-radius:7px;color:inherit;transition:opacity .1s,background .1s;';
+    del.onmouseenter = () => {
+      del.style.opacity = '1';
+      del.style.background = 'rgba(255,255,255,.12)';
+    };
+    del.onmouseleave = () => {
+      del.style.opacity = '.55';
+      del.style.background = 'transparent';
+    };
     del.onclick = async () => {
       try {
         // a tangent is stored under the conversation it was created from (its parent, for a
@@ -501,6 +542,7 @@ class TangentApp {
       setTimeout(() => {
         scheduled = false;
         if (this.tangentsCache.length) this.renderIndicator();
+        this.applyHighlights(); // claude.ai re-rendered; redraw underlines (from cache, no I/O)
       }, 250);
     }).observe(document.body, { childList: true, subtree: true });
   }
@@ -516,14 +558,72 @@ class TangentApp {
     } catch (e) {
       return this.onStorageError(e);
     }
+    this.anchorConv = conv;
+    this.anchorTangents = tangents;
     this.ensureHighlightStyle();
+    this.applyHighlights();
+  }
+
+  /** (Re)build the highlight ranges from the cached list against the live DOM, remembering each
+   *  range so a click can be hit-tested back to its tangent. Safe to call on every re-render:
+   *  claude.ai replaces message nodes (detaching old ranges), so we always rebuild. */
+  private applyHighlights() {
+    if (!('highlights' in CSS) || this.anchorConv !== convUuidFromPath()) return;
+    this.anchors = [];
     const ranges: Range[] = [];
-    for (const t of tangents) {
-      const r = findTextRange(t.highlightText);
-      if (r) ranges.push(r);
+    if (this.anchorTangents.length) {
+      const roots = buildRootMaps();
+      for (const t of this.anchorTangents) {
+        const r = rangeFromRoots(roots, t.highlightText);
+        if (r) {
+          ranges.push(r);
+          this.anchors.push({ rec: t, range: r });
+        }
+      }
     }
-    const hl = new Highlight(...ranges);
-    CSS.highlights.set('tangent', hl);
+    CSS.highlights.set('tangent', new Highlight(...ranges));
+  }
+
+  /** Which tangent's highlight (if any) sits under a viewport point. */
+  private anchorAt(x: number, y: number): TangentRecord | null {
+    for (const a of this.anchors) {
+      for (const r of a.range.getClientRects()) {
+        if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return a.rec;
+      }
+    }
+    return null;
+  }
+
+  private onAnchorClick = (e: MouseEvent) => {
+    if (!window.getSelection()?.isCollapsed) return; // mid drag-select, not a plain click
+    const rec = this.anchorAt(e.clientX, e.clientY);
+    if (!rec) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.reopenRecord(rec);
+  };
+
+  private onAnchorHover = (e: MouseEvent) => {
+    if (this.hoverScheduled) return;
+    this.hoverScheduled = true;
+    const { clientX: x, clientY: y } = e;
+    requestAnimationFrame(() => {
+      this.hoverScheduled = false;
+      const over = !!this.anchorAt(x, y);
+      if (over === this.cursorOn) return;
+      this.cursorOn = over;
+      document.documentElement.style.cursor = over ? 'pointer' : '';
+    });
+  };
+
+  /** Reopen a tangent. From inside an iframe (a sub-tangent's highlight) this hands off to the
+   *  top page so the window opens in the same shared space as everything else. */
+  private reopenRecord(rec: TangentRecord) {
+    if (inSubframe()) {
+      topWin().postMessage({ source: 'claude-tangent', kind: 'reopen', rec }, location.origin);
+    } else {
+      this.reopen(rec);
+    }
   }
 
   private ensureHighlightStyle() {
@@ -569,24 +669,52 @@ class TangentApp {
   }
 }
 
-/** Build a Range spanning the first occurrence of `text` within the conversation. */
-function findTextRange(text: string): Range | null {
-  const needle = text.trim();
-  if (needle.length < 3) return null;
-  const roots = document.querySelectorAll(SEL.assistantMessage);
-  for (const root of roots) {
+/**
+ * A whitespace-normalized, flattened view of one assistant message's text, mapping each char in
+ * the flat string back to its source text node + offset. This lets a highlight be matched even
+ * when it spans multiple text nodes (bold, links, paragraph breaks) or differs only in whitespace.
+ */
+interface RootMap {
+  flat: string;
+  map: { node: Text; offset: number }[];
+}
+
+function buildRootMaps(): RootMap[] {
+  const out: RootMap[] = [];
+  for (const root of document.querySelectorAll(SEL.assistantMessage)) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    // single text-node fast path
+    let flat = '';
+    const map: { node: Text; offset: number }[] = [];
     let node: Node | null;
     while ((node = walker.nextNode())) {
-      const idx = (node.textContent || '').indexOf(needle);
-      if (idx >= 0) {
-        const range = document.createRange();
-        range.setStart(node, idx);
-        range.setEnd(node, idx + needle.length);
-        return range;
+      const t = node as Text;
+      const raw = t.textContent || '';
+      for (let i = 0; i < raw.length; i++) {
+        const ws = /\s/.test(raw[i]);
+        if (ws && flat.endsWith(' ')) continue; // collapse runs of whitespace
+        flat += ws ? ' ' : raw[i];
+        map.push({ node: t, offset: i }); // map stays index-aligned with flat
       }
     }
+    out.push({ flat, map });
+  }
+  return out;
+}
+
+/** A Range spanning the first occurrence of `text` across the prebuilt root maps. */
+function rangeFromRoots(roots: RootMap[], text: string): Range | null {
+  const needle = text.replace(/\s+/g, ' ').trim();
+  if (needle.length < 3) return null;
+  for (const { flat, map } of roots) {
+    const idx = flat.indexOf(needle);
+    if (idx < 0) continue;
+    const start = map[idx];
+    const end = map[idx + needle.length - 1];
+    if (!start || !end) continue;
+    const range = document.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset + 1);
+    return range;
   }
   return null;
 }
